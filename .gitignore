@@ -1,4 +1,4 @@
-# --- Unity Core (QUAN TRỌNG: Không xóa phần này) ---
+# --- Unity Core ---
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/
@@ -6,7 +6,7 @@
 /[Bb]uilds/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
-/Packages/*
+/Packages/
 
 # --- MemoryCaptures & Crash Reports ---
 /[Mm]emoryCaptures/
@@ -34,7 +34,7 @@
 # --- Visual Studio Specific ---
 .vs/
 
-# --- OS Generated (File rác của hệ điều hành) ---
+# --- OS Generated ---
 .DS_Store
 .DS_Store?
 ._*
@@ -44,8 +44,7 @@ ehthumbs.db
 Thumbs.db
 
 # --- Unity Version Control (Plastic SCM) ---
-# Vì bạn dùng UVC để phát triển nhưng nộp bằng Git,
-# cần loại bỏ folder metadata của Plastic để tránh upload nhầm lên GitHub.
+# Cần loại bỏ folder metadata của Plastic để tránh upload nhầm lên GitHub.
 /.plastic/
 /ignore.conf
 *.private
