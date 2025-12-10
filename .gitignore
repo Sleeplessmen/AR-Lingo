@@ -6,13 +6,14 @@
 /[Bb]uilds/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
-/Packages/
+
+# CHÚ Ý: KHÔNG ĐƯỢC IGNORE THƯ MỤC /Packages/ VÌ NÓ CHỨA MANIFEST.JSON
 
 # --- MemoryCaptures & Crash Reports ---
 /[Mm]emoryCaptures/
 /[Rr]ecordings/
 
-# --- Visual Studio / IDE (File tự sinh, không cần upload) ---
+# --- Visual Studio / IDE ---
 *.csproj
 *.unityproj
 *.sln
@@ -42,9 +43,13 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+Desktop.ini
 
-# --- Unity Version Control (Plastic SCM) ---
-# Cần loại bỏ folder metadata của Plastic để tránh upload nhầm lên GitHub.
+# --- Design / Art junk ---
+*.psd.tmp
+*.ai.tmp
+
+# --- Unity Version Control (Plastic SCM cleanup) ---
 /.plastic/
 /ignore.conf
 *.private
@@ -52,6 +57,5 @@ Thumbs.db
 ^*.private.[0-9]+
 ^*.private.[0-9]+.meta
 
-# --- Asset specific overrides (Giữ lại meta file) ---
-# Bắt buộc phải giữ file .meta vì Unity dùng nó để quản lý link giữa các object
+# --- Asset specific overrides ---
 !*.meta
