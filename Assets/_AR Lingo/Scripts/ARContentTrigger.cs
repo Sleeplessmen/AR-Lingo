@@ -33,7 +33,8 @@ public class ARContentTrigger : MonoBehaviour
             Debug.Log($"[ARContentTrigger] Found {renderers.Length} renderers in model");
             foreach (var r in renderers)
             {
-                Debug.Log($"[ARContentTrigger] Renderer: {r.name}, Enabled: {r.enabled}, Material: {(r.material != null ? r.material.name : "None")}");
+                string matName = r.sharedMaterial != null ? r.sharedMaterial.name : "None";
+                Debug.Log($"[ARContentTrigger] Renderer: {r.name}, Enabled: {r.enabled}, Material: {matName}");
             }
             
             // Make sure model starts hidden
