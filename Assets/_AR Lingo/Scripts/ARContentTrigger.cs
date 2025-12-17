@@ -1,14 +1,14 @@
 ﻿using UnityEngine;
-using Vuforia; // Nếu chưa cài Vuforia thì comment dòng này lại
+using Vuforia;
 
 public class ARContentTrigger : MonoBehaviour
 {
     [Header("Target Settings")]
-    [SerializeField] private string animalName = "Cow"; // Tên để gửi cho UI
+    [SerializeField] private string animalName = "Cow";
     [SerializeField] private GameObject animalModel;    // Kéo Pf_Cow vào đây
 
     [Header("Debug Simulation")]
-    public bool isTestMode = true; // Bật cái này để test bằng phím Space
+    public bool isTestMode = true;
 
     // --- LOGIC XỬ LÝ KHI TÌM THẤY TARGET ---
     public void OnTargetFound()
@@ -16,11 +16,21 @@ public class ARContentTrigger : MonoBehaviour
         Debug.Log($"[AR] Found Target: {animalName}");
 
         // 1. Hiện con thú
-        if (animalModel != null) animalModel.SetActive(true);
+        if (animalModel != null)
+        {
+            animalModel.SetActive(true);
+        }
 
-        // 2. Báo cho GameManager biết là đã tìm thấy -> Để nó bật UI
-        // (Giả sử GameManager có hàm này, tôi sẽ update GameManager bên dưới)
-        GameManager.Instance.OnARObjectDetected(animalName);
+        // 2. Báo cho GameManager (Thêm kiểm tra Instance != null để tránh lỗi)
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.OnARObjectDetected(animalName);
+        }
+        else
+        {
+            // Cảnh báo nhẹ nếu quên chưa bật GameManager
+            Debug.LogWarning("GameManager chưa được khởi tạo, nhưng AR vẫn chạy.");
+        }
     }
 
     public void OnTargetLost()
@@ -28,22 +38,20 @@ public class ARContentTrigger : MonoBehaviour
         Debug.Log($"[AR] Lost Target: {animalName}");
 
         // 1. Ẩn con thú
-        if (animalModel != null) animalModel.SetActive(false);
+        if (animalModel != null)
+        {
+            animalModel.SetActive(false);
+        }
 
-        // 2. Báo GameManager quay về trạng thái Scan
-        GameManager.Instance.OnARObjectLost();
+        // 2. Báo GameManager
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.OnARObjectLost();
+        }
     }
 
-    // --- GIẢ LẬP (MOCKING) CHO UI DEV ---
     private void Update()
     {
-        if (isTestMode)
-        {
-            // Ấn phím F (Found) để giả lập tìm thấy
-            if (Input.GetKeyDown(KeyCode.F)) OnTargetFound();
-
-            // Ấn phím L (Lost) để giả lập mất dấu
-            if (Input.GetKeyDown(KeyCode.L)) OnTargetLost();
-        }
+        
     }
 }

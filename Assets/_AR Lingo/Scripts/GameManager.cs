@@ -1,11 +1,11 @@
 ﻿using UnityEngine;
-using System; // Để dùng Action (Event)
+using System;
 
 public enum AppState
 {
     Home,
-    ARScanning,     // Đang tìm mặt phẳng
-    ARObjectFound,  // Đã hiện thú, hiện UI tương tác
+    ARScanning,     // Màn hình camera, đang tìm thẻ
+    ARObjectFound,  // Đã thấy thẻ, hiện nút Quiz/Dictionary
     Quiz,
     Dictionary
 }
@@ -14,69 +14,82 @@ public class GameManager : MonoBehaviour
 {
     public static GameManager Instance { get; private set; }
 
-    [Header("Debug")]
+    [Header("Debug Info")]
     [SerializeField] private AppState _currentState;
+    [SerializeField] private string _currentAnimalID; // Biến để debug xem đang nhận con gì
 
-    // Event để UI lắng nghe và thay đổi theo (Observer Pattern)
+    // --- EVENTS (CHO UI LẮNG NGHE) ---
+    // 1. Báo tin khi chuyển màn hình (VD: Tắt Home, Bật AR View)
     public event Action<AppState> OnStateChanged;
+
+    // 2. Báo tin khi xác định được con vật cụ thể (để UI load nội dung tương ứng)
+    public event Action<string> OnAnimalDetected;
+
+    // Property để các script khác có thể lấy tên con vật hiện tại bất cứ lúc nào
+    public string CurrentAnimalID => _currentAnimalID;
 
     private void Awake()
     {
-        // Singleton Pattern chuẩn chỉ
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
             return;
         }
         Instance = this;
-        DontDestroyOnLoad(gameObject); // Giữ sống qua các Scene
+        DontDestroyOnLoad(gameObject);
     }
 
     private void Start()
     {
-        ChangeState(AppState.Home); // Khởi đầu ở Home
+        // Mặc định vào game là ở màn hình Home
+        ChangeState(AppState.Home);
     }
+
+    // --- CORE LOGIC: QUẢN LÝ TRẠNG THÁI ---
 
     public void ChangeState(AppState newState)
     {
         _currentState = newState;
         Debug.Log($"[GameManager] State Changed to: {newState}");
 
-        // Bắn event báo cho UI biết
+        // Bắn tín hiệu cho UIManager biết để bật/tắt Canvas
         OnStateChanged?.Invoke(newState);
     }
 
+    // --- CORE LOGIC: GIAO TIẾP VỚI AR (VUFORIA) ---
+
+    // Hàm này được gọi từ script ARContentTrigger
     public void OnARObjectDetected(string animalID)
     {
-        // Chuyển State để UI biết mà hiện nút Dictionary/Quiz
+        // 1. Lưu lại ID (VD: "Cow", "Fox")
+        _currentAnimalID = animalID;
+
+        // 2. Chuyển State sang chế độ tương tác
         ChangeState(AppState.ARObjectFound);
 
-        Debug.Log($"[GameManager] UI should show controls for: {animalID}");
-        // TODO: Gửi animalID sang cho UIManager để load đúng data (Tên, Tiếng Anh...)
+        // 3. Bắn event kèm dữ liệu để UI cập nhật text/âm thanh
+        Debug.Log($"[GameManager] Detected: {animalID}. Notify UI to update data.");
+        OnAnimalDetected?.Invoke(animalID);
     }
 
     public void OnARObjectLost()
     {
-        // Quay về trạng thái quét
+        // Khi mất dấu thẻ, quay về trạng thái Scanning
+        Debug.Log("[GameManager] Target Lost. Resetting to Scan mode.");
+
+        _currentAnimalID = null; // Xóa dữ liệu cũ
         ChangeState(AppState.ARScanning);
     }
 
-    // --- CÁC HÀM MOCKUP LOGIC (GIẢ LẬP) ---
+    // --- HÀM ĐIỀU KHIỂN LUỒNG (Flow Control) ---
 
     public void StartARScan()
     {
-        // Giả vờ chuyển sang màn hình Scan
+        // Được gọi khi bấm nút "Start" ở Home Screen
+        Debug.Log("[GameManager] Starting AR Session...");
         ChangeState(AppState.ARScanning);
 
-        // MOCK: Sau 2 giây tự tìm thấy con thú (để test UI khi chưa có AR thật)
-        Invoke(nameof(MockObjectFound), 2.0f);
-    }
-
-    private void MockObjectFound()
-    {
-        if (_currentState == AppState.ARScanning)
-        {
-            ChangeState(AppState.ARObjectFound);
-        }
+        // LƯU Ý: Đã xóa đoạn Invoke Mockup. 
+        // Giờ đây game sẽ đợi tín hiệu thật từ Camera/ARContentTrigger.
     }
 }
