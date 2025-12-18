@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a7bebb417f87f1b4f96e4db0d435d7f4, type: 3}
+  m_Name: WordData_ShibaInu
+  m_EditorClassIdentifier: Assembly-CSharp::WordData
+  id: ShibaInu
+  englishName: Shiba Inu
+  vietnameseName: "Ch\xF3 Shiba"
+  description: A Japanese breed of hunting dog.
+  modelPrefab: {fileID: 0}
+  icon2D: {fileID: 21300000, guid: f9ace54c5c6bba8489d7fdef5789d4f3, type: 3}
+  audioPronounce: {fileID: 8300000, guid: 1e105ebf1e2966240a0e26cd9e52d79c, type: 3}
+  audioSFX: {fileID: 8300000, guid: 48232001620ce0d4f94199c2e7a7870e, type: 3}
