@@ -8,7 +8,7 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: Eye_Black
-    second: {fileID: 2100000, guid: 9c58ca2649f5b6b41893330f54d0af60, type: 2}
+    second: {fileID: 2100000, guid: e5ebf7046df13bc4e8273ddabbe3c0d5, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
