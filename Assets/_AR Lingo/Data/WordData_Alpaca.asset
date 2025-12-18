@@ -16,7 +16,7 @@ MonoBehaviour:
   englishName: 'Alpaca '
   vietnameseName: "L\u1EA1c \u0111\xE0 Alpaca "
   description: A domesticated species of South American camelid.
-  modelPrefab: {fileID: 0}
+  modelPrefab: {fileID: 822801854457435096, guid: f884e1a236191d946a4a784d132e78b7, type: 3}
   icon2D: {fileID: 21300000, guid: e4f5db6e15a05b94b9ea0ab1d31c6bd6, type: 3}
   audioPronounce: {fileID: 8300000, guid: bac5acd47b7c8ff42a45e953ae4d05aa, type: 3}
-  audioSFX: {fileID: 0}
+  audioSFX: {fileID: 8300000, guid: 4f65fe3830226494d96ce273ac71a786, type: 3}
