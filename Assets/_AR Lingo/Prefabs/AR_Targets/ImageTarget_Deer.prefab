@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 1951348803625000303}
   - component: {fileID: 1415938349031405886}
   - component: {fileID: 1359733448426279308}
+  - component: {fileID: 7425669394168626054}
   m_Layer: 0
   m_Name: ImageTarget_Deer
   m_TagString: Untagged
@@ -52,7 +53,7 @@ MonoBehaviour:
   RuntimeCollider: 0
   mTrackableName: img_deer
   mInitializedInEditor: 1
-  mDataSetPath: Vuforia/NewAnimalDatabase.xml
+  mDataSetPath: Vuforia/Animals12.xml
   mAspectRatio: 1
   mImageTargetType: 0
   mWidth: 0.1
@@ -61,7 +62,7 @@ MonoBehaviour:
   mMotionHint: 1
   mTrackingOptimization: 0
   mTrackingOptimizationNeedsUpgrade: 0
-  mPreview: {fileID: 0}
+  mPreview: {fileID: 7425669394168626054}
 --- !u!114 &1415938349031405886
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -145,6 +146,25 @@ MonoBehaviour:
   wordID: Deer
   ar3DModel: {fileID: 8604027563084526486, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
   enableDebugLogs: 1
+--- !u!114 &7425669394168626054
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 79854855119142767}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 1778676317, guid: 8a9a760f95896c34689febc965510927, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Vuforia.Unity.Engine.dll::Vuforia.ImageTargetPreview
+  mObserverBehaviour: {fileID: 1951348803625000303}
+  mHiddenRoot: {fileID: 0}
+  mTargetName: img_deer
+  mDatasetName: Vuforia/Animals12.xml
+  mCastedBehaviour: {fileID: 1951348803625000303}
+  mMeshFilter: {fileID: 0}
+  mMeshRenderer: {fileID: 0}
 --- !u!1001 &8543633518882918070
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -153,6 +173,14 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 2646130612834873638}
     m_Modifications:
+    - target: {fileID: 6368878029382830569, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
+      propertyPath: 'm_Materials.Array.data[5]'
+      value: 
+      objectReference: {fileID: 2100000, guid: e5ebf7046df13bc4e8273ddabbe3c0d5, type: 2}
+    - target: {fileID: 6368878029382830569, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
+      propertyPath: 'm_Materials.Array.data[6]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 1ce2fb861e79a564384e28c6617b725a, type: 2}
     - target: {fileID: 8292333584881943486, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0.005
@@ -199,7 +227,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 8604027563084526486, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
       propertyPath: m_IsActive
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 8803061588076693231, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
       propertyPath: m_LocalPosition.x
@@ -209,7 +237,8 @@ PrefabInstance:
       propertyPath: m_LocalPosition.z
       value: 4.32
       objectReference: {fileID: 0}
-    m_RemovedComponents: []
+    m_RemovedComponents:
+    - {fileID: 7648573842744626002, guid: 0a4deb52c5a55af44a22da713bb55d3c, type: 3}
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
     m_AddedComponents: []
