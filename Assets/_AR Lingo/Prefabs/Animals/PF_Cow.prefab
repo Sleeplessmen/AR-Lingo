@@ -1744,7 +1744,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::AnimalInteraction
   sfxAnimal: {fileID: 8300000, guid: b9ff1bd9601d3f94baa891941750133c, type: 3}
   sfxName: {fileID: 8300000, guid: 720a39248000b0044a73110977619c12, type: 3}
-  actionTriggerName: DoAction
+  defaultActionTrigger: DoAction
 --- !u!95 &4985254389311754595
 Animator:
   serializedVersion: 7

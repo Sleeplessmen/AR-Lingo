@@ -144,7 +144,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARContentTrigger
   wordID: Bull
-  ar3DModel: {fileID: 0}
   enableDebugLogs: 1
 --- !u!114 &214347533325783190
 MonoBehaviour:

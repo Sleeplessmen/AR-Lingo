@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 5105872030486226030}
   - component: {fileID: 3618699759688373956}
   - component: {fileID: 6232262892624170776}
+  - component: {fileID: 2672372568197799165}
   m_Layer: 0
   m_Name: ImageTarget_Alpaca
   m_TagString: Untagged
@@ -61,7 +62,7 @@ MonoBehaviour:
   mMotionHint: 1
   mTrackingOptimization: 0
   mTrackingOptimizationNeedsUpgrade: 0
-  mPreview: {fileID: 0}
+  mPreview: {fileID: 2672372568197799165}
 --- !u!114 &3618699759688373956
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -143,8 +144,26 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARContentTrigger
   wordID: Alpaca
-  ar3DModel: {fileID: 3539106995425358832}
   enableDebugLogs: 1
+--- !u!114 &2672372568197799165
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2739903883437874326}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 1778676317, guid: 8a9a760f95896c34689febc965510927, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Vuforia.Unity.Engine.dll::Vuforia.ImageTargetPreview
+  mObserverBehaviour: {fileID: 5105872030486226030}
+  mHiddenRoot: {fileID: 0}
+  mTargetName: img_alpaca
+  mDatasetName: Vuforia/Animals12.xml
+  mCastedBehaviour: {fileID: 5105872030486226030}
+  mMeshFilter: {fileID: 0}
+  mMeshRenderer: {fileID: 0}
 --- !u!1001 &3532206395393821315
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -233,10 +252,5 @@ PrefabInstance:
 --- !u!4 &578425608403977403 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 4107863429063593528, guid: 728d694ba9dc37443be23a532a8009b0, type: 3}
-  m_PrefabInstance: {fileID: 3532206395393821315}
-  m_PrefabAsset: {fileID: 0}
---- !u!1 &3539106995425358832 stripped
-GameObject:
-  m_CorrespondingSourceObject: {fileID: 7182075360868723, guid: 728d694ba9dc37443be23a532a8009b0, type: 3}
   m_PrefabInstance: {fileID: 3532206395393821315}
   m_PrefabAsset: {fileID: 0}
