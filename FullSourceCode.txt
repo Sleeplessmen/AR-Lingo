@@ -1,0 +1,3310 @@
+
+
+// ==========================================
+// FILE PATH: Assets\Editor\Migration\AddVuforiaEnginePackage.cs
+// ==========================================
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using UnityEditor;
+using UnityEngine;
+
+[InitializeOnLoad]
+public class AddVuforiaEnginePackage
+{
+    static readonly string sPackagesPath = Path.Combine(Application.dataPath, "..", "Packages");
+    static readonly string sManifestJsonPath = Path.Combine(sPackagesPath, "manifest.json");
+    const string VUFORIA_VERSION = "11.4.4";
+    const string VUFORIA_TAR_FILE_DIR = "Assets/Editor/Migration/";
+    const string DEPENDENCIES_DIR = "Assets/Resources/VuforiaDependencies";
+    const string PACKAGES_RELATIVE_PATH = "Packages";
+    const string MRTK_PACKAGE = "org.mixedrealitytoolkit.core";
+    const string OPEN_XR_PACKAGE = "com.microsoft.mixedreality.openxr";
+    const string PACKAGE_NAME_REGEX = @"(([a-z]+)(\.[a-z0-9]+)*)(\-)?((\d+)\.(\d+)\.(\d+)(\-([a-z0-9\.])+)*)?(\.tgz)";
+
+    static readonly ScopedRegistry sVuforiaRegistry = new ScopedRegistry
+    {
+        name = "Vuforia",
+        url = "https://registry.packages.developer.vuforia.com/",
+        scopes = new[] { "com.ptc.vuforia" }
+    };
+
+    static AddVuforiaEnginePackage()
+    {
+        if (Application.isBatchMode)
+            return;
+        
+        var manifest = Manifest.JsonDeserialize(sManifestJsonPath);
+
+        var packages = GetPackageDescriptions();
+            
+        if (!packages.All(p => IsVuforiaUpToDate(manifest, p.BundleId)))
+            DisplayAddPackageDialog(manifest, packages);
+        
+        ResolveDependencies(manifest);
+    }
+
+    public static void ResolveDependenciesSilent()
+    {
+        var manifest = Manifest.JsonDeserialize(sManifestJsonPath);
+        
+        var packages = GetDependencyDescriptions();
+        if (packages != null && packages.Count > 0)
+            MoveDependencies(manifest, packages);
+        
+        CleanupDependenciesFolder();
+    }
+    
+    static void ResolveDependencies(Manifest manifest)
+    {
+        var packages = GetDependencyDescriptions();
+        if (packages != null && packages.Count > 0)
+            DisplayDependenciesDialog(manifest, packages);
+    }
+    
+    static bool IsVuforiaUpToDate(Manifest manifest, string bundleId)
+    {
+        var dependencies = manifest.Dependencies.Split(',').ToList();
+        var upToDate = false;
+
+        if(dependencies.Any(d => d.Contains(bundleId) && d.Contains("file:")))
+            upToDate = IsUsingRightFileVersion(manifest, bundleId);
+
+        return upToDate;
+    }
+    
+    static bool IsUsingRightFileVersion(Manifest manifest, string bundleId)
+    {
+        var dependencies = manifest.Dependencies.Split(',').ToList();
+        return dependencies.Any(d => d.Contains(bundleId) && d.Contains("file:") && VersionNumberIsTheLatestTarball(d));
+    }
+
+    static bool VersionNumberIsTheLatestTarball(string package)
+    {
+        var version = package.Split('-');
+        if (version.Length >= 2)
+        {
+            version[1] = version[1].TrimEnd(".tgz\"".ToCharArray());
+            return IsCurrentVersionHigher(version[1]);
+        }
+
+        return false;
+    }
+
+    static bool IsCurrentVersionHigher(string currentVersionString)
+    {
+        if (string.IsNullOrEmpty(currentVersionString) || string.IsNullOrEmpty(VUFORIA_VERSION))
+            return false;
+
+        var currentVersion = TryConvertStringToVersion(currentVersionString);
+        var updatingVersion = TryConvertStringToVersion(VUFORIA_VERSION);
+        
+        if (currentVersion >= updatingVersion)
+            return true;
+
+        return false;
+    }
+
+    static Version TryConvertStringToVersion(string versionString)
+    {
+        Version res;
+        try
+        {
+            res = new Version(versionString);
+        }
+        catch (Exception)
+        {
+            return new Version();
+        }
+
+        return new Version(res.Major, res.Minor, res.Build);
+    }
+
+    static void DisplayAddPackageDialog(Manifest manifest, IEnumerable<PackageDescription> packages)
+    {
+        if (EditorUtility.DisplayDialog("Add Vuforia Engine Package",
+            $"Would you like to update your project to include the Vuforia Engine {VUFORIA_VERSION} package from the unitypackage?\n" +
+            $"If an older Vuforia Engine package is already present in your project it will be upgraded to version {VUFORIA_VERSION}\n\n",
+            "Update", "Cancel"))
+        {
+            foreach (var package in packages)
+            {
+                MovePackageFile(VUFORIA_TAR_FILE_DIR, package.FileName);
+                UpdateManifest(manifest, package.BundleId, package.FileName);
+            }
+        }
+    }
+    
+    static void DisplayDependenciesDialog(Manifest manifest, IEnumerable<PackageDescription> packages)
+    {
+        if (EditorUtility.DisplayDialog("Add Sample Dependencies",
+                                        "Would you like to update your project to include all of its dependencies?\n" +
+                                        "If a different version of the package is already present, it will be deleted.\n\n",
+                                        "Update", "Cancel"))
+        {
+            MoveDependencies(manifest, packages);
+            CleanupDependenciesFolder();
+            if (ShouldProjectRestart(packages))
+                DisplayRestartDialog();
+        }
+    }
+
+    static void DisplayRestartDialog()
+    {
+        if (EditorUtility.DisplayDialog("Restart Unity Editor",
+                                        "Due to a Unity lifecycle issue, this project needs to be closed and re-opened " +
+                                        "after importing this Vuforia Engine sample.\n\n",
+                                        "Restart", "Cancel"))
+        {
+            RestartEditor();
+        }
+    }
+
+    static List<PackageDescription> GetPackageDescriptions()
+    {
+        var tarFilePaths = Directory.GetFiles(Path.Combine(Directory.GetCurrentDirectory(), VUFORIA_TAR_FILE_DIR)).Where(f => f.EndsWith(".tgz"));
+
+        // Define a regular expression for repeated words.
+        var rx = new Regex(PACKAGE_NAME_REGEX, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        var packageDescriptions = new List<PackageDescription>();
+
+        foreach (var filePath in tarFilePaths)
+        {
+            var fileName = Path.GetFileName(filePath);
+            // Find matches.
+            var matches = rx.Matches(fileName);
+
+            // Report on each match.
+            foreach (Match match in matches)
+            {
+                var groups = match.Groups;
+                var bundleId = groups[1].Value;
+                var versionString = groups[5].Value;
+
+                if (string.Equals(versionString, VUFORIA_VERSION))
+                {
+                    packageDescriptions.Add(new PackageDescription()
+                    {
+                        BundleId = bundleId,
+                        FileName = fileName
+                    });
+                }
+            }
+        }
+
+        return packageDescriptions;
+    }
+    
+    static List<PackageDescription> GetDependencyDescriptions()
+    {
+        var dependencyDirectory = Path.Combine(Directory.GetCurrentDirectory(), DEPENDENCIES_DIR);
+        if (!Directory.Exists(dependencyDirectory))
+            return null;
+        var tarFilePaths = Directory.GetFiles(dependencyDirectory).Where(f => f.EndsWith(".tgz"));
+
+        // Define a regular expression for repeated words.
+        var rx = new Regex(PACKAGE_NAME_REGEX, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        var packageDescriptions = new List<PackageDescription>();
+
+        foreach (var filePath in tarFilePaths)
+        {
+            var fileName = Path.GetFileName(filePath);
+            // Find matches.
+            var matches = rx.Matches(fileName);
+
+            // Report on each match.
+            foreach (Match match in matches)
+            {
+                var groups = match.Groups;
+                var bundleId = groups[1].Value;
+                bundleId = bundleId.Replace(".tgz", "");
+
+                packageDescriptions.Add(new PackageDescription
+                                        {
+                                            BundleId = bundleId,
+                                            FileName = fileName
+                                        });
+            }
+        }
+
+        return packageDescriptions;
+    }
+
+    static void MoveDependencies(Manifest manifest, IEnumerable<PackageDescription> packages)
+    {
+        foreach (var package in packages)
+        {
+            RemoveDependency(manifest, package.BundleId, package.FileName);
+            MovePackageFile(DEPENDENCIES_DIR, package.FileName);
+            UpdateManifest(manifest, package.BundleId, package.FileName);
+        }
+    }
+    
+    static void MovePackageFile(string folder, string fileName)
+    {
+        var sourceFile = Path.Combine(Directory.GetCurrentDirectory(), folder, fileName);
+        var destFile = Path.Combine(Directory.GetCurrentDirectory(), PACKAGES_RELATIVE_PATH, fileName);
+        File.Copy(sourceFile, destFile, true);
+        File.Delete(sourceFile);
+        File.Delete(sourceFile + ".meta");
+    }
+
+    static void UpdateManifest(Manifest manifest, string bundleId, string fileName)
+    {
+        //remove existing, outdated NPM scoped registry if present
+        var registries = manifest.ScopedRegistries.ToList();
+        if (registries.Contains(sVuforiaRegistry))
+        {
+            registries.Remove(sVuforiaRegistry);
+            manifest.ScopedRegistries = registries.ToArray();
+        }
+
+        //add specified vuforia version via Git URL
+        SetVuforiaVersion(manifest, bundleId, fileName);
+
+        manifest.JsonSerialize(sManifestJsonPath);
+
+        AssetDatabase.Refresh();
+    }
+
+    static void RemoveDependency(Manifest manifest, string bundleId, string fileName)
+    {
+        var destFile = Path.Combine(Directory.GetCurrentDirectory(), PACKAGES_RELATIVE_PATH, fileName);
+        if (File.Exists(destFile))
+            File.Delete(destFile);
+        
+        // remove existing
+        var dependencies = manifest.Dependencies.Split(',').ToList();
+        for (var i = 0; i < dependencies.Count; i++)
+        {
+            if (dependencies[i].Contains(bundleId))
+            {
+                dependencies.RemoveAt(i);
+                break;
+            }
+        }
+
+        manifest.Dependencies = string.Join(",", dependencies);
+
+        manifest.JsonSerialize(sManifestJsonPath);
+
+        AssetDatabase.Refresh();
+    }
+
+    static void CleanupDependenciesFolder()
+    {
+        if (!Directory.Exists(DEPENDENCIES_DIR)) 
+            return;
+        
+        Directory.Delete(DEPENDENCIES_DIR);
+        File.Delete(DEPENDENCIES_DIR + ".meta");
+        AssetDatabase.Refresh();
+    }
+
+    static bool ShouldProjectRestart(IEnumerable<PackageDescription> packages)
+    {
+        return packages.Any(p => p.BundleId == MRTK_PACKAGE || p.BundleId == OPEN_XR_PACKAGE);
+    }
+
+    static void RestartEditor()
+    {
+        EditorApplication.OpenProject(Directory.GetCurrentDirectory());
+    }
+
+    static void SetVuforiaVersion(Manifest manifest, string bundleId, string fileName)
+    {
+        var dependencies = manifest.Dependencies.Split(',').ToList();
+
+        var versionEntry = $"\"file:{fileName}\"";
+        var versionSet = false;
+        for (var i = 0; i < dependencies.Count; i++)
+        {
+            if (!dependencies[i].Contains(bundleId))
+                continue;
+
+            var kvp = dependencies[i].Split(':');
+            dependencies[i] = kvp[0] + ": " + versionEntry;
+            versionSet = true;
+        }
+
+        if (!versionSet)
+            dependencies.Insert(0, $"\n    \"{bundleId}\": {versionEntry}");
+
+        manifest.Dependencies = string.Join(",", dependencies);
+    }
+
+    class Manifest
+    {
+        const int INDEX_NOT_FOUND = -1;
+        const string DEPENDENCIES_KEY = "\"dependencies\"";
+
+        public ScopedRegistry[] ScopedRegistries;
+        public string Dependencies;
+
+        public void JsonSerialize(string path)
+        {
+            var jsonString = GetJsonString();
+
+            var startIndex = GetDependenciesStart(jsonString);
+            var endIndex = GetDependenciesEnd(jsonString, startIndex);
+
+            var stringBuilder = new StringBuilder();
+
+            stringBuilder.Append(jsonString.Substring(0, startIndex));
+            stringBuilder.Append(Dependencies);
+            stringBuilder.Append(jsonString.Substring(endIndex, jsonString.Length - endIndex));
+
+            File.WriteAllText(path, stringBuilder.ToString());
+        }
+
+        string GetJsonString()
+        {
+            if (ScopedRegistries.Length > 0)
+                return JsonUtility.ToJson(
+                    new UnitySerializableManifest { scopedRegistries = ScopedRegistries, dependencies = new DependencyPlaceholder() },
+                    true);
+
+            return JsonUtility.ToJson(
+                new UnitySerializableManifestDependenciesOnly() { dependencies = new DependencyPlaceholder() },
+                true);
+        }
+
+
+        public static Manifest JsonDeserialize(string path)
+        {
+            var jsonString = File.ReadAllText(path);
+
+            var registries = JsonUtility.FromJson<UnitySerializableManifest>(jsonString).scopedRegistries ?? new ScopedRegistry[0];
+            var dependencies = DeserializeDependencies(jsonString);
+
+            return new Manifest { ScopedRegistries = registries, Dependencies = dependencies };
+        }
+
+        static string DeserializeDependencies(string json)
+        {
+            var startIndex = GetDependenciesStart(json);
+            var endIndex = GetDependenciesEnd(json, startIndex);
+
+            if (startIndex == INDEX_NOT_FOUND || endIndex == INDEX_NOT_FOUND)
+                return null;
+
+            var dependencies = json.Substring(startIndex, endIndex - startIndex);
+            return dependencies;
+        }
+
+        static int GetDependenciesStart(string json)
+        {
+            var dependenciesIndex = json.IndexOf(DEPENDENCIES_KEY, StringComparison.InvariantCulture);
+            if (dependenciesIndex == INDEX_NOT_FOUND)
+                return INDEX_NOT_FOUND;
+
+            var dependenciesStartIndex = json.IndexOf('{', dependenciesIndex + DEPENDENCIES_KEY.Length);
+
+            if (dependenciesStartIndex == INDEX_NOT_FOUND)
+                return INDEX_NOT_FOUND;
+
+            dependenciesStartIndex++; //add length of '{' to starting point
+
+            return dependenciesStartIndex;
+        }
+
+        static int GetDependenciesEnd(string jsonString, int dependenciesStartIndex)
+        {
+            return jsonString.IndexOf('}', dependenciesStartIndex);
+        }
+    }
+
+    class UnitySerializableManifestDependenciesOnly
+    {
+        public DependencyPlaceholder dependencies;
+    }
+
+    class UnitySerializableManifest
+    {
+        public ScopedRegistry[] scopedRegistries;
+        public DependencyPlaceholder dependencies;
+    }
+
+    [Serializable]
+    struct ScopedRegistry
+    {
+        public string name;
+        public string url;
+        public string[] scopes;
+
+        public override bool Equals(object obj)
+        {
+            if (!(obj is ScopedRegistry))
+                return false;
+
+            var other = (ScopedRegistry)obj;
+
+            return name == other.name &&
+                   url == other.url &&
+                   scopes.SequenceEqual(other.scopes);
+        }
+
+        public static bool operator ==(ScopedRegistry a, ScopedRegistry b)
+        {
+            return a.Equals(b);
+        }
+
+        public static bool operator !=(ScopedRegistry a, ScopedRegistry b)
+        {
+            return !a.Equals(b);
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = 17;
+
+            foreach (var scope in scopes)
+                hash = hash * 23 + (scope == null ? 0 : scope.GetHashCode());
+
+            hash = hash * 23 + (name == null ? 0 : name.GetHashCode());
+            hash = hash * 23 + (url == null ? 0 : url.GetHashCode());
+
+            return hash;
+        }
+    }
+
+    [Serializable]
+    struct DependencyPlaceholder { }
+    
+    struct PackageDescription
+    {
+        public string BundleId;
+        public string FileName;
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\AnimalAnimationController.cs
+// ==========================================
+
+using UnityEngine;
+
+/// <summary>
+/// Controls animal animations (Walk, Attack, Idle)
+/// Attach this to each animal 3D model that has animations
+/// </summary>
+[RequireComponent(typeof(Animator))]
+public class AnimalAnimationController : MonoBehaviour
+{
+    [Header("Animation Names")]
+    [SerializeField] private string idleAnimationName = "Idle";
+    [SerializeField] private string walkAnimationName = "Walk";
+    [SerializeField] private string attackAnimationName = "Attack";
+
+    [Header("Settings")]
+    [SerializeField] private float animationDuration = 3f; // How long to play Walk/Attack before returning to Idle
+
+    private Animator animator;
+    private bool isPlayingAnimation = false;
+
+    void Awake()
+    {
+        animator = GetComponent<Animator>();
+        if (animator == null)
+        {
+            Debug.LogError($"[AnimalAnimationController] No Animator found on {gameObject.name}!");
+        }
+    }
+
+    void OnEnable()
+    {
+        // Play idle when model is enabled
+        PlayIdle();
+    }
+
+    /// <summary>
+    /// Play Idle animation
+    /// </summary>
+    public void PlayIdle()
+    {
+        if (animator == null) return;
+
+        if (!string.IsNullOrEmpty(idleAnimationName))
+        {
+            animator.Play(idleAnimationName);
+            Debug.Log($"[AnimalAnimationController] Playing Idle animation on {gameObject.name}");
+        }
+
+        isPlayingAnimation = false;
+    }
+
+    /// <summary>
+    /// Play Walk animation, then return to Idle
+    /// </summary>
+    public void PlayWalk()
+    {
+        if (animator == null || isPlayingAnimation) return;
+
+        if (!string.IsNullOrEmpty(walkAnimationName))
+        {
+            animator.Play(walkAnimationName);
+            Debug.Log($"[AnimalAnimationController] Playing Walk animation on {gameObject.name}");
+            
+            isPlayingAnimation = true;
+            Invoke(nameof(PlayIdle), animationDuration);
+        }
+        else
+        {
+            Debug.LogWarning($"[AnimalAnimationController] Walk animation name not set for {gameObject.name}");
+        }
+    }
+
+    /// <summary>
+    /// Play Attack animation, then return to Idle
+    /// </summary>
+    public void PlayAttack()
+    {
+        if (animator == null || isPlayingAnimation) return;
+
+        if (!string.IsNullOrEmpty(attackAnimationName))
+        {
+            animator.Play(attackAnimationName);
+            Debug.Log($"[AnimalAnimationController] Playing Attack animation on {gameObject.name}");
+            
+            isPlayingAnimation = true;
+            Invoke(nameof(PlayIdle), animationDuration);
+        }
+        else
+        {
+            Debug.LogWarning($"[AnimalAnimationController] Attack animation name not set for {gameObject.name}");
+        }
+    }
+
+    /// <summary>
+    /// Set custom animation names (called from ARScanFeature when WordData is loaded)
+    /// </summary>
+    public void SetAnimationNames(string walk, string attack, string idle = "Idle")
+    {
+        if (!string.IsNullOrEmpty(walk))
+            walkAnimationName = walk;
+        
+        if (!string.IsNullOrEmpty(attack))
+            attackAnimationName = attack;
+        
+        if (!string.IsNullOrEmpty(idle))
+            idleAnimationName = idle;
+    }
+
+    /// <summary>
+    /// Stop current animation and return to idle
+    /// </summary>
+    public void StopAnimation()
+    {
+        if (isPlayingAnimation)
+        {
+            CancelInvoke(nameof(PlayIdle));
+            PlayIdle();
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\AnimalInteraction.cs
+// ==========================================
+
+using UnityEngine;
+
+[RequireComponent(typeof(Animator))] // Bắt buộc phải có Animator
+[RequireComponent(typeof(Collider))]
+public class AnimalInteraction : MonoBehaviour
+{
+    [Header("Audio Settings")]
+    [Tooltip("Tiếng kêu động vật (Vd: Moo, Bark)")]
+    [SerializeField] private AudioClip sfxAnimal;
+
+    [Tooltip("Tiếng đọc tên (Vd: This is a Cow)")]
+    [SerializeField] private AudioClip sfxName;
+
+    [Header("Animation Settings")]
+    [Tooltip("Tên Trigger trong Animator Controller (Vd: DoAction)")]
+    [SerializeField] private string actionTriggerName = "DoAction";
+
+    private Animator _animator;
+
+    void Awake()
+    {
+        // Tự động tìm Animator trên chính object này hoặc object con
+        _animator = GetComponent<Animator>();
+        if (_animator == null) _animator = GetComponentInChildren<Animator>();
+    }
+
+    // Hàm này chạy khi Camera soi thấy thẻ (Image Target bật Model lên)
+    private void OnEnable()
+    {
+        // 1. Reset Animation về Idle (để tránh bị kẹt ở pose cũ)
+        if (_animator != null)
+        {
+            _animator.Rebind();
+            _animator.Update(0f);
+        }
+
+        // 2. GỌI AUDIO MANAGER PHÁT VOICE
+        // Thay vì tự phát, hãy nhờ Sếp (Manager) phát đúng kênh Voice
+        if (sfxName != null && AudioManager.Instance != null)
+        {
+            AudioManager.Instance.PlayVoice(sfxName);
+        }
+    }
+
+    // Hàm này chạy khi người dùng BẤM vào con vật
+    private void OnMouseDown()
+    {
+        PerformAction();
+    }
+
+    public void PerformAction()
+    {
+        // 1. GỌI AUDIO MANAGER PHÁT SFX
+        // Nhờ Sếp phát đúng kênh SFX
+        if (sfxAnimal != null && AudioManager.Instance != null)
+        {
+            AudioManager.Instance.PlaySFX(sfxAnimal, true);
+        }
+
+        // 2. Kích hoạt Animation Action
+        if (_animator != null)
+        {
+            // Reset trigger cũ để tránh lặp lệnh (Optional)
+            _animator.ResetTrigger(actionTriggerName);
+            _animator.SetTrigger(actionTriggerName);
+            // Debug.Log($"[AnimalInteraction] Triggered animation: {actionTriggerName}");
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\ARContentTrigger.cs
+// ==========================================
+
+﻿using UnityEngine;
+using Vuforia;
+
+/// <summary>
+/// AR Content Trigger - Handles Vuforia image target detection
+/// This script should be attached to each Image Target prefab
+/// The OnTargetFound/OnTargetLost methods are called by DefaultObserverEventHandler via Unity Events
+/// </summary>
+public class ARContentTrigger : MonoBehaviour
+{
+    [Header("Target Settings")]
+    [SerializeField] private string wordID = "Bull"; // Must match WordDatabase ID
+    [SerializeField] private GameObject ar3DModel; // The 3D model (e.g., PF_Bull)
+
+    [Header("Debug")]
+    [SerializeField] private bool enableDebugLogs = true;
+
+    private void Start()
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[ARContentTrigger] Initialized for target: {wordID}");
+        
+        if (ar3DModel != null)
+        {
+            // DEBUG: Log model info at start
+            Debug.Log($"[ARContentTrigger] Model Name: {ar3DModel.name}");
+            Debug.Log($"[ARContentTrigger] Model Position: {ar3DModel.transform.localPosition}");
+            Debug.Log($"[ARContentTrigger] Model Scale: {ar3DModel.transform.localScale}");
+            Debug.Log($"[ARContentTrigger] Model Active Self: {ar3DModel.activeSelf}");
+            
+            // Check for renderer
+            Renderer[] renderers = ar3DModel.GetComponentsInChildren<Renderer>();
+            Debug.Log($"[ARContentTrigger] Found {renderers.Length} renderers in model");
+            foreach (var r in renderers)
+            {
+                string matName = r.sharedMaterial != null ? r.sharedMaterial.name : "None";
+                Debug.Log($"[ARContentTrigger] Renderer: {r.name}, Enabled: {r.enabled}, Material: {matName}");
+            }
+            
+            // Make sure model starts hidden
+            ar3DModel.SetActive(false);
+            if (enableDebugLogs)
+                Debug.Log($"[ARContentTrigger] 3D Model '{ar3DModel.name}' set to inactive");
+        }
+        else
+        {
+            Debug.LogError($"[ARContentTrigger] AR 3D Model is not assigned for {wordID}!");
+        }
+    }
+
+    /// <summary>
+    /// Called by DefaultObserverEventHandler when target is found
+    /// This is connected via Unity Events in the Inspector
+    /// </summary>
+    public void OnTargetFound()
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[ARContentTrigger] ✓ Target FOUND: {wordID}");
+
+        // Show the 3D model
+        if (ar3DModel != null)
+        {
+            ar3DModel.SetActive(true);
+            
+            // DEBUG: Check after activation
+            Debug.Log($"[ARContentTrigger] ✓ Model activated - Active: {ar3DModel.activeSelf}, ActiveInHierarchy: {ar3DModel.activeInHierarchy}");
+            Debug.Log($"[ARContentTrigger] ✓ Model World Position: {ar3DModel.transform.position}");
+            Debug.Log($"[ARContentTrigger] ✓ ImageTarget Position: {transform.position}");
+            
+            if (enableDebugLogs)
+                Debug.Log($"[ARContentTrigger] ✓ 3D Model '{ar3DModel.name}' activated");
+        }
+        else
+        {
+            Debug.LogError($"[ARContentTrigger] Cannot show model - ar3DModel is null!");
+        }
+
+        // Notify GameManager
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.OnARObjectDetected(wordID);
+            if (enableDebugLogs)
+                Debug.Log($"[ARContentTrigger] ✓ Notified GameManager about {wordID}");
+        }
+        else
+        {
+            Debug.LogWarning("[ARContentTrigger] GameManager not found!");
+        }
+    }
+
+    /// <summary>
+    /// Called by DefaultObserverEventHandler when target is lost
+    /// This is connected via Unity Events in the Inspector
+    /// </summary>
+    public void OnTargetLost()
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[ARContentTrigger] ✗ Target LOST: {wordID}");
+
+        // Hide the 3D model
+        if (ar3DModel != null)
+        {
+            ar3DModel.SetActive(false);
+            if (enableDebugLogs)
+                Debug.Log($"[ARContentTrigger] ✗ 3D Model '{ar3DModel.name}' deactivated");
+        }
+
+        // Notify GameManager
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.NotifyARObjectLost();
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\GameManager.cs
+// ==========================================
+
+﻿using UnityEngine;
+using System;
+
+public enum AppState
+{
+    Home,
+    ARScanning,     // Màn hình camera, đang tìm thẻ
+    ARObjectFound,  // Đã thấy thẻ, hiện nút Quiz/Dictionary
+    Quiz,
+    Dictionary
+}
+
+public class GameManager : MonoBehaviour
+{
+    public static GameManager Instance { get; private set; }
+
+    [Header("Debug Info")]
+    [SerializeField] private AppState _currentState;
+    [SerializeField] private string _currentAnimalID; // Biến để debug xem đang nhận con gì
+
+    // --- EVENTS (CHO UI LẮNG NGHE) ---
+    // 1. Báo tin khi chuyển màn hình (VD: Tắt Home, Bật AR View)
+    public event Action<AppState> OnStateChanged;
+
+    // 2. Báo tin khi xác định được con vật cụ thể (để UI load nội dung tương ứng)
+    public event Action<string> OnAnimalDetected;
+
+    // 3. Báo tin khi AR target bị mất (camera không còn nhìn thấy thẻ)
+    public event Action OnARObjectLost;
+
+    // Property để các script khác có thể lấy tên con vật hiện tại bất cứ lúc nào
+    public string CurrentAnimalID => _currentAnimalID;
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    private void Start()
+    {
+        // Mặc định vào game là ở màn hình Home
+        ChangeState(AppState.Home);
+    }
+
+    // --- CORE LOGIC: QUẢN LÝ TRẠNG THÁI ---
+
+    public void ChangeState(AppState newState)
+    {
+        _currentState = newState;
+        Debug.Log($"[GameManager] State Changed to: {newState}");
+
+        // Bắn tín hiệu cho UIManager biết để bật/tắt Canvas
+        OnStateChanged?.Invoke(newState);
+    }
+
+    // --- CORE LOGIC: GIAO TIẾP VỚI AR (VUFORIA) ---
+
+    // Hàm này được gọi từ script ARContentTrigger
+    public void OnARObjectDetected(string animalID)
+    {
+        // 1. Lưu lại ID (VD: "Cow", "Fox")
+        _currentAnimalID = animalID;
+
+        // 2. Chuyển State sang chế độ tương tác
+        ChangeState(AppState.ARObjectFound);
+
+        // 3. Bắn event kèm dữ liệu để UI cập nhật text/âm thanh
+        Debug.Log($"[GameManager] Detected: {animalID}. Notify UI to update data.");
+        OnAnimalDetected?.Invoke(animalID);
+    }
+
+    // Hàm này được gọi từ script ARContentTrigger khi mất target
+    public void NotifyARObjectLost()
+    {
+        // Khi mất dấu thẻ, quay về trạng thái Scanning
+        Debug.Log("[GameManager] Target Lost. Resetting to Scan mode.");
+
+        _currentAnimalID = null; // Xóa dữ liệu cũ
+        ChangeState(AppState.ARScanning);
+
+        // Bắn event để UI biết
+        OnARObjectLost?.Invoke();
+    }
+
+    // --- HÀM ĐIỀU KHIỂN LUỒNG (Flow Control) ---
+
+    public void StartARScan()
+    {
+        // Được gọi khi bấm nút "Start" ở Home Screen
+        Debug.Log("[GameManager] Starting AR Session...");
+        ChangeState(AppState.ARScanning);
+
+        // LƯU Ý: Đã xóa đoạn Invoke Mockup. 
+        // Giờ đây game sẽ đợi tín hiệu thật từ Camera/ARContentTrigger.
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\QuizData.cs
+// ==========================================
+
+using UnityEngine;
+
+/// <summary>
+/// Quiz Data ScriptableObject - stores quiz questions
+/// </summary>
+[CreateAssetMenu(fileName = "QuizData", menuName = "AR Lingo/Quiz Data")]
+public class QuizData : ScriptableObject
+{
+    public QuizQuestion[] questions;
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\WordData.cs
+// ==========================================
+
+using UnityEngine;
+
+// Menu giúp click chuột phải tạo file nhanh: Create -> AR Lingo -> Word Data
+[CreateAssetMenu(fileName = "NewWordData", menuName = "AR Lingo/Word Data")]
+public class WordData : ScriptableObject
+{
+    [Header("Identity")]
+    public string id;              // ID duy nhất (vd: "animal_lion")
+
+    [Header("Category")]
+    public WordCategory category;  // NEW: Loại từ (Animal, Plant, Object...)
+
+    [Header("Content")]
+    public string englishName;     // Vd: Lion
+    public string vietnameseName;  // Vd: Sư tử
+    public string pronunciation;   // NEW: Phiên âm (vd: "/ˈlaɪən/")
+    [TextArea]
+    public string description;     // Mô tả ngắn
+    [TextArea]
+    public string vietnameseDescription; // NEW: Mô tả tiếng Việt
+
+    [Header("Assets")]
+    public GameObject modelPrefab; // Prefab 3D con vật (có Animator)
+    public Sprite icon2D;          // Ảnh đại diện cho Dictionary
+    public AudioClip audioPronounce; // File âm thanh đọc tên (Anh/Việt)
+    public AudioClip audioSFX;       // Tiếng kêu con vật (Gầm, sủa...)
+
+    [Header("Animation Settings (Only for Animals)")]
+    public bool hasAnimations;     // NEW: Check if this has animations (auto-set based on category)
+    public string walkAnimationName = "Walk"; // NEW: Tên animation Walk
+    public string attackAnimationName = "Attack"; // NEW: Tên animation Attack
+
+    // Helper: Lấy tên theo ngôn ngữ đang chọn (Sprint sau sẽ cần)
+    public string GetName(bool isEnglish)
+    {
+        return isEnglish ? englishName : vietnameseName;
+    }
+
+    // Helper: Check if this word supports animations (only animals)
+    public bool SupportsAnimations()
+    {
+        return category == WordCategory.Animal && hasAnimations;
+    }
+
+    // Validate on editor changes
+    private void OnValidate()
+    {
+        // Auto-set hasAnimations based on category
+        hasAnimations = (category == WordCategory.Animal);
+    }
+}
+
+// NEW: Enum for word categories
+public enum WordCategory
+{
+    Animal,    // Con vật - có animation
+    Plant,     // Thực vật - không có animation
+    Object,    // Đồ vật - không có animation
+    Food       // Đồ ăn - không có animation
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\WordDatabase.cs
+// ==========================================
+
+using System.Collections.Generic;
+using UnityEngine;
+using System.Linq; // Dùng LINQ để tìm kiếm nhanh
+
+[CreateAssetMenu(fileName = "WordDatabase", menuName = "AR Lingo/Database")]
+public class WordDatabase : ScriptableObject
+{
+    [SerializeField] private List<WordData> allWords;
+
+    // Hàm tìm kiếm con vật dựa trên ID (Dùng khi AR Camera scan được target)
+    public WordData GetWordByID(string searchID)
+    {
+        // Tìm trong list xem có con nào trùng ID không
+        return allWords.FirstOrDefault(w => w.id == searchID);
+    }
+
+    // Hàm lấy danh sách ngẫu nhiên để làm Quiz (Sprint sau)
+    public List<WordData> GetRandomWords(int count)
+    {
+        // Shuffle và lấy count phần tử (Logic giả định, cần viết kỹ hơn sau này)
+        return allWords.OrderBy(x => Random.value).Take(count).ToList();
+    }
+
+    // Hàm lấy tất cả các từ (Dùng cho Dictionary List View)
+    public List<WordData> GetAllWords()
+    {
+        return allWords != null ? new List<WordData>(allWords) : new List<WordData>();
+    }
+
+    // Hàm tìm kiếm từ theo tên (English hoặc Vietnamese)
+    public List<WordData> SearchWords(string searchText)
+    {
+        if (string.IsNullOrEmpty(searchText) || allWords == null)
+            return GetAllWords();
+
+        searchText = searchText.ToLower();
+        return allWords.Where(w => 
+            w.englishName.ToLower().Contains(searchText) ||
+            w.vietnameseName.ToLower().Contains(searchText)
+        ).ToList();
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Controllers\ARVisualController.cs
+// ==========================================
+
+using UnityEngine;
+using System.Collections;
+using TMPro;
+
+public class ARVisualController : MonoBehaviour
+{
+    [Header("Animation Settings")]
+    [Tooltip("Thời gian để con vật hiện ra hoàn toàn")]
+    [SerializeField] private float spawnDuration = 0.5f;
+    [Tooltip("Đường cong chuyển động (Nên chọn kiểu ElasticOut)")]
+    [SerializeField] private AnimationCurve spawnCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
+
+    [Header("UI Components")]
+    [Tooltip("Kéo cái World Space Canvas trên đầu con vật vào đây")]
+    [SerializeField] private Canvas infoCanvas;
+
+    private Vector3 _originalScale;
+    private Camera _mainCamera;
+
+    private void Awake()
+    {
+        _mainCamera = Camera.main;
+        _originalScale = transform.localScale; // Lưu lại kích thước chuẩn (ví dụ 1,1,1)
+    }
+
+    private void OnEnable()
+    {
+        // 1. Reset về bé tí hon
+        transform.localScale = Vector3.zero;
+
+        // 2. Bắt đầu hiệu ứng phình to ra
+        StartCoroutine(SpawnAnimation());
+
+        // 3. Nếu có UI, bật nó lên
+        if (infoCanvas != null) infoCanvas.gameObject.SetActive(true);
+    }
+
+    private void LateUpdate()
+    {
+        // Giữ cho bảng tên luôn quay mặt về phía Camera
+        if (infoCanvas != null && _mainCamera != null)
+        {
+            // Kỹ thuật Billboard: Chỉ xoay trục Y để chữ không bị nghiêng ngả
+            infoCanvas.transform.LookAt(infoCanvas.transform.position + _mainCamera.transform.rotation * Vector3.forward,
+            _mainCamera.transform.rotation * Vector3.up);
+        }
+    }
+
+    private IEnumerator SpawnAnimation()
+    {
+        float timer = 0f;
+        while (timer < spawnDuration)
+        {
+            timer += Time.deltaTime;
+            float progress = timer / spawnDuration;
+
+            // Tính toán scale dựa trên đường cong
+            float curveValue = spawnCurve.Evaluate(progress);
+            transform.localScale = _originalScale * curveValue;
+
+            yield return null;
+        }
+        transform.localScale = _originalScale; // Chốt hạ kích thước chuẩn
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Controllers\SimpleMenuController.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+
+public class SimpleMenuController : MonoBehaviour
+{
+    [Header("Kéo các Panel vào đây")]
+    public GameObject homePanel;
+    public GameObject scanPanel;
+    public GameObject dictionaryPanel;
+    public GameObject quizPanel;
+    public GameObject settingPanel;
+
+    // --- HÀM CHO CÁC NÚT Ở MÀN HÌNH HOME ---
+
+    public void OpenScan()
+    {
+        homePanel.SetActive(false); // Tắt Home
+        scanPanel.SetActive(true);  // Bật Scan
+    }
+
+    public void OpenDictionary()
+    {
+        homePanel.SetActive(false);
+        dictionaryPanel.SetActive(true);
+    }
+
+    public void OpenQuiz()
+    {
+        homePanel.SetActive(false);
+        quizPanel.SetActive(true);
+    }
+
+    public void OpenSetting()
+    {
+        homePanel.SetActive(false);
+        settingPanel.SetActive(true);
+    }
+
+    /// <summary>
+    /// Quit the application
+    /// </summary>
+    public void QuitApp()
+    {
+        Debug.Log("[SimpleMenuController] Quitting application...");
+
+        #if UNITY_EDITOR
+        // Stop playing in Unity Editor
+        UnityEditor.EditorApplication.isPlaying = false;
+        #else
+        // Quit application on device
+        Application.Quit();
+        #endif
+    }
+
+    // --- HÀM CHO NÚT BACK ---
+
+    public void BackToHome()
+    {
+        // Tắt hết tất cả các panel con đi cho chắc ăn
+        scanPanel.SetActive(false);
+        dictionaryPanel.SetActive(false);
+        quizPanel.SetActive(false);
+        settingPanel.SetActive(false);
+
+        // Bật lại Home
+        homePanel.SetActive(true);
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Managers\ARScanFeature.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// AR Scan Feature - Integrates with Vuforia AR detection
+/// Listens to GameManager events for real AR detection
+/// </summary>
+public class ARScanFeature : MonoBehaviour
+{
+    [Header("1. UI Elements")]
+    public GameObject viewInfoButton;
+    public GameObject quizButton;
+    public GameObject resetButton;
+    public GameObject scanInstruction;
+    public GameObject scanFrame;
+    public GameObject walkButton;
+    public GameObject attackButton;
+
+    [Header("2. Panel References")]
+    public GameObject dictionaryPanel;
+    public GameObject scanPanel;
+    public DictionaryUI dictionaryUI;
+    public GameObject dictionaryListViewPanel;
+    public GameObject dictionaryDetailViewPanel;
+    public GameObject dictionaryListViewBackButton;
+    public GameObject dictionaryHeader;
+    
+    [Header("3. Data")]
+    public WordDatabase wordDatabase;
+    public GameManager gameManager;
+
+    [Header("4. AR Detection Settings")]
+    public Camera arCamera;
+    [SerializeField] private bool autoShowButtonsOnDetection = true;
+
+    [Header("5. Debug")]
+    [SerializeField] private bool enableDebugLogs = true;
+
+    private WordData currentDetectedWord;
+    private bool hasDetectedObject = false;
+    private bool isViewingDictionary = false; // NEW: Track if user is viewing dictionary
+
+    void Start()
+    {
+        if (arCamera == null)
+        {
+            arCamera = Camera.main;
+            if (arCamera != null && enableDebugLogs)
+                Debug.Log($"[ARScanFeature] Auto-found camera: {arCamera.name}");
+        }
+    }
+
+    void OnEnable()
+    {
+        if (gameManager == null)
+        {
+            gameManager = GameManager.Instance;
+        }
+
+        if (gameManager != null)
+        {
+            gameManager.OnAnimalDetected += HandleAnimalDetected;
+            gameManager.OnARObjectLost += HandleARObjectLost;
+            
+            if (enableDebugLogs)
+                Debug.Log("[ARScanFeature] Subscribed to GameManager events");
+        }
+        else
+        {
+            Debug.LogError("ARScanFeature: GameManager reference is missing!");
+        }
+
+        ResetScanState();
+    }
+
+    void OnDisable()
+    {
+        if (gameManager != null)
+        {
+            gameManager.OnAnimalDetected -= HandleAnimalDetected;
+            gameManager.OnARObjectLost -= HandleARObjectLost;
+        }
+    }
+
+    private void HandleAnimalDetected(string wordID)
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[ARScanFeature] AR Target detected: {wordID}");
+
+        if (wordDatabase != null)
+        {
+            currentDetectedWord = wordDatabase.GetWordByID(wordID);
+            
+            if (currentDetectedWord != null)
+            {
+                if (enableDebugLogs)
+                    Debug.Log($"[ARScanFeature] Word found: {currentDetectedWord.englishName} ({currentDetectedWord.vietnameseName})");
+                
+                ShowDetectedObject();
+            }
+            else
+            {
+                Debug.LogWarning($"[ARScanFeature] Word with ID '{wordID}' not found in database!");
+            }
+        }
+        else
+        {
+            Debug.LogError("ARScanFeature: WordDatabase is not assigned!");
+        }
+    }
+
+    private void HandleARObjectLost()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] AR Target lost");
+        
+        // NEW: Don't reset if user is viewing dictionary detail
+        if (isViewingDictionary)
+        {
+            if (enableDebugLogs)
+                Debug.Log("[ARScanFeature] User is viewing dictionary - keeping UI as is");
+            
+            // Just hide the buttons, keep dictionary open
+            if (viewInfoButton != null) viewInfoButton.SetActive(false);
+            if (quizButton != null) quizButton.SetActive(false);
+            if (walkButton != null) walkButton.SetActive(false);
+            if (attackButton != null) attackButton.SetActive(false);
+            
+            hasDetectedObject = false;
+            return;
+        }
+        
+        // Normal reset for scan panel
+        ResetScanState();
+    }
+
+    private void ShowDetectedObject()
+    {
+        hasDetectedObject = true;
+        isViewingDictionary = false; // Reset dictionary flag
+
+        if (scanInstruction != null) scanInstruction.SetActive(false);
+        if (scanFrame != null) scanFrame.SetActive(false);
+        if (resetButton != null) resetButton.SetActive(false);
+
+        if (autoShowButtonsOnDetection)
+        {
+            ShowActionButtons();
+        }
+        else
+        {
+            if (viewInfoButton != null) viewInfoButton.SetActive(false);
+            if (quizButton != null) quizButton.SetActive(false);
+            if (walkButton != null) walkButton.SetActive(false);
+            if (attackButton != null) attackButton.SetActive(false);
+            
+            if (enableDebugLogs)
+                Debug.Log("[ARScanFeature] Waiting for tap on model to show buttons...");
+        }
+    }
+
+    void Update()
+    {
+        if (!hasDetectedObject || isViewingDictionary) return; // Don't detect clicks when viewing dictionary
+
+        bool inputDetected = false;
+        Vector3 inputPosition = Vector3.zero;
+
+        if (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)
+        {
+            inputDetected = true;
+            inputPosition = Input.GetTouch(0).position;
+            
+            if (enableDebugLogs)
+                Debug.Log($"[ARScanFeature] Touch detected at: {inputPosition}");
+        }
+        else if (Input.GetMouseButtonDown(0))
+        {
+            inputDetected = true;
+            inputPosition = Input.mousePosition;
+            
+            if (enableDebugLogs)
+                Debug.Log($"[ARScanFeature] Mouse click detected at: {inputPosition}");
+        }
+
+        if (inputDetected)
+        {
+            if (arCamera != null)
+            {
+                Ray ray = arCamera.ScreenPointToRay(inputPosition);
+                RaycastHit hit;
+                
+                if (enableDebugLogs)
+                    Debug.Log($"[ARScanFeature] Raycasting from {ray.origin} in direction {ray.direction}");
+                
+                if (Physics.Raycast(ray, out hit, 100f))
+                {
+                    if (enableDebugLogs)
+                        Debug.Log($"[ARScanFeature] ✓ Hit object: {hit.collider.gameObject.name}");
+                    
+                    if (hit.collider.gameObject.name.StartsWith("PF_") || 
+                        hit.collider.transform.root.name.StartsWith("ImageTarget"))
+                    {
+                        ShowActionButtons();
+                    }
+                }
+                else
+                {
+                    if (enableDebugLogs)
+                        Debug.Log("[ARScanFeature] Raycast hit nothing - showing buttons anyway (fallback)");
+                    
+                    ShowActionButtons();
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[ARScanFeature] AR Camera not assigned!");
+                ShowActionButtons();
+            }
+        }
+    }
+
+    private void ShowActionButtons()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Showing action buttons");
+        
+        if (viewInfoButton != null) viewInfoButton.SetActive(true);
+        if (walkButton != null) walkButton.SetActive(true);
+        if (attackButton != null) attackButton.SetActive(true);
+        
+        if (quizButton != null) quizButton.SetActive(false);
+    }
+
+    public void OnWalkButtonClicked()
+    {
+        Debug.Log("[ARScanFeature] Walk button clicked - Animation will be added later");
+    }
+
+    public void OnAttackButtonClicked()
+    {
+        Debug.Log("[ARScanFeature] Attack button clicked - Animation will be added later");
+    }
+
+    public void OnOpenDictionaryClicked()
+    {
+        if (currentDetectedWord == null)
+        {
+            Debug.LogWarning("ARScanFeature: No word detected to display!");
+            return;
+        }
+
+        if (enableDebugLogs)
+            Debug.Log($"[ARScanFeature] Opening dictionary for: {currentDetectedWord.englishName}");
+
+        // NEW: Set flag that we're viewing dictionary
+        isViewingDictionary = true;
+
+        if (scanPanel != null) scanPanel.SetActive(false);
+        if (dictionaryPanel != null) dictionaryPanel.SetActive(true);
+
+        if (dictionaryDetailViewPanel != null) 
+            dictionaryDetailViewPanel.SetActive(true);
+        if (dictionaryListViewPanel != null) 
+            dictionaryListViewPanel.SetActive(false);
+
+        if (dictionaryListViewBackButton != null)
+            dictionaryListViewBackButton.SetActive(false);
+        if (dictionaryHeader != null)
+            dictionaryHeader.SetActive(false);
+
+        if (dictionaryUI != null)
+        {
+            dictionaryUI.gameObject.SetActive(true);
+            dictionaryUI.DisplayWord(currentDetectedWord, fromARView: true);
+        }
+        else
+        {
+            Debug.LogWarning("ARScanFeature: DictionaryUI component not found!");
+        }
+    }
+
+    public void OnResetClicked()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Resetting scan state");
+        
+        // NEW: Reset dictionary flag
+        isViewingDictionary = false;
+        
+        ResetScanState();
+    }
+
+    // NEW: Call this when user clicks Back button in dictionary
+    public void OnBackFromDictionary()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Back from dictionary to scan panel");
+        
+        // Reset dictionary flag
+        isViewingDictionary = false;
+        
+        // Hide dictionary, show scan panel
+        if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+        if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
+        if (scanPanel != null) scanPanel.SetActive(true);
+        
+        // Reset to clean scan state
+        ResetScanState();
+    }
+
+    private void ResetScanState()
+    {
+        hasDetectedObject = false;
+        currentDetectedWord = null;
+        isViewingDictionary = false; // Make sure flag is reset
+
+        if (scanInstruction != null) scanInstruction.SetActive(true);
+        if (scanFrame != null) scanFrame.SetActive(true);
+
+        if (viewInfoButton != null) viewInfoButton.SetActive(false);
+        if (quizButton != null) quizButton.SetActive(false);
+        if (resetButton != null) resetButton.SetActive(false);
+        if (walkButton != null) walkButton.SetActive(false);
+        if (attackButton != null) attackButton.SetActive(false);
+
+        // Only hide dictionary panels if not currently viewing
+        if (!isViewingDictionary)
+        {
+            if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+            if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Managers\AudioManager.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.Audio; // Bắt buộc để dùng Mixer
+
+public class AudioManager : MonoBehaviour
+{
+    // Singleton: Đảm bảo chỉ có 1 AudioManager tồn tại
+    public static AudioManager Instance;
+
+    [Header("Components")]
+    [Tooltip("Kéo file MainMixer vào đây")]
+    public AudioMixer mainMixer;
+
+    // THÊM MỚI: 2 Nguồn phát riêng biệt
+    [Header("Audio Sources")]
+    [Tooltip("Kéo AudioSource dành cho SFX vào đây")]
+    public AudioSource sfxSource;
+
+    [Tooltip("Kéo AudioSource dành cho Voice/Pronunciation vào đây")]
+    public AudioSource voiceSource;
+
+    [Header("Settings Keys")]
+    // Tên tham số bạn đã đặt trong bước Expose Parameter
+    private const string MIXER_SFX = "SFXVol";
+    private const string MIXER_VOICE = "VoiceVol";
+
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject); // Giữ cho nó sống khi chuyển cảnh
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    private void Start()
+    {
+        // Tải setting cũ khi bật game. Mặc định là 1 (Max volume)
+        float savedSFX = PlayerPrefs.GetFloat("Settings_SFX", 1f);
+        float savedVoice = PlayerPrefs.GetFloat("Settings_Voice", 1f);
+
+        SetSFXLevel(savedSFX);
+        SetVoiceLevel(savedVoice);
+    }
+
+    // --- HÀM CHO UI GỌI VÀO ---
+
+    // Slider UI sẽ truyền giá trị từ 0 đến 1 vào đây
+    public void SetSFXLevel(float sliderValue)
+    {
+        mainMixer.SetFloat(MIXER_SFX, LogarithmicDb(sliderValue));
+        PlayerPrefs.SetFloat("Settings_SFX", sliderValue); // Lưu lại
+        PlayerPrefs.Save();
+    }
+
+    public void SetVoiceLevel(float sliderValue)
+    {
+        mainMixer.SetFloat(MIXER_VOICE, LogarithmicDb(sliderValue));
+        PlayerPrefs.SetFloat("Settings_Voice", sliderValue); // Lưu lại
+        PlayerPrefs.Save();
+    }
+
+    // --- THÊM MỚI: HÀM PHÁT ÂM THANH ---
+
+    public void PlaySFX(AudioClip clip, bool interrupt = false)
+    {
+        if (clip == null || sfxSource == null) return;
+
+        // Nếu yêu cầu ngắt (interrupt = true), dừng tiếng đang kêu
+        if (interrupt)
+        {
+            sfxSource.Stop();
+        }
+
+        // Phát tiếng mới
+        sfxSource.PlayOneShot(clip);
+    }
+
+    public void PlayVoice(AudioClip clip)
+    {
+        if (clip != null && voiceSource != null)
+        {
+            // Với giọng đọc, ta nên dừng câu cũ trước khi đọc câu mới (tùy chọn)
+            voiceSource.Stop();
+            voiceSource.PlayOneShot(clip);
+        }
+    }
+
+    // --- CÔNG THỨC TOÁN HỌC ---
+    // Chuyển đổi 0-1 (Slider) thành -80dB đến 0dB (Mixer)
+    private float LogarithmicDb(float linear)
+    {
+        linear = Mathf.Clamp(linear, 0.0001f, 1f); // Tránh log(0) gây lỗi
+        return Mathf.Log10(linear) * 20;
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Managers\MockScanFeature.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+public class MockScanFeature : MonoBehaviour
+{
+    [Header("1. Các vật thể")]
+    public GameObject model3D;          // Kéo Mock_Apple vào đây
+    public GameObject viewInfoButton;   // Kéo Btn_ViewInfo vào đây (Dictionary)
+    public GameObject quizButton;       // (Tuỳ chọn) Kéo Btn_Quiz vào đây
+    public GameObject resetButton;      // Kéo Btn_Reset / Rescan vào đây
+    public GameObject stimulateButton;  // Kéo Btn_Stimulate / Scan vào đây
+    public GameObject scanInstruction;  // Kéo cái Bottom_Panel (hướng dẫn quét) vào đây
+    public GameObject scanFrame;        // Kéo Scan Frame (khung quét) vào đây
+
+    [Header("2. Kết nối UI")]
+    public GameObject dictionaryPanel; // Kéo Panel_Dictionary vào đây
+    public GameObject scanPanel;       // Kéo Panel_Scan vào đây
+    public DictionaryUI dictionaryUI;   // Reference to DictionaryUI component
+    public GameObject dictionaryListViewPanel;  // Panel list (nếu dùng chế độ 2 panel)
+    public GameObject dictionaryDetailViewPanel; // Panel detail (nếu tách riêng)
+    public GameObject dictionaryListViewBackButton; // Button_Back in Panel_ListView (to hide when opening from AR)
+    public GameObject dictionaryHeader;       // Header in Dictionary panel (to hide when opening from AR)
+    
+    [Header("3. Word Database")]
+    public WordDatabase wordDatabase;  // Kéo WordDatabase asset vào đây
+    public string detectedWordID = "animal_cow"; // ID của từ được phát hiện (sẽ được set khi AR scan)
+    
+    [Header("4. Legacy - Dữ liệu mẫu (Fallback nếu không dùng WordData)")]
+    public string objectName = "Quả Táo Đỏ";
+    [TextArea] public string objectDescription = "Đây là quả táo đỏ tươi, rất ngon và giàu vitamin.";
+
+    [Header("5. Mock Scan Settings")]
+    public float fakeScanDelay = 2.0f;   // Thời gian chờ giả lập (2-3s)
+    public GameObject scanFX;           // (Tuỳ chọn) Hiệu ứng particle / khung quét
+
+    private WordData currentDetectedWord; // Word data của vật thể đang được phát hiện
+    private bool isScanning = false;
+
+    // --- HÀM 1: Gắn vào nút SIMULATE / SCAN ---
+    public void OnSimulateClicked()
+    {
+        if (isScanning) return; // Đang quét rồi thì bỏ qua
+        StartCoroutine(MockScanRoutine());
+    }
+
+    // --- HÀM 2: Gắn vào nút VIEW INFO (Xem từ điển) ---
+    public void OnOpenDictionaryClicked()
+    {
+        // 1. Chuyển màn hình
+        scanPanel.SetActive(false);
+        dictionaryPanel.SetActive(true);
+
+        // Bật panel Detail, tắt panel List nếu có cấu hình
+        if (dictionaryDetailViewPanel != null) 
+            dictionaryDetailViewPanel.SetActive(true);
+        if (dictionaryListViewPanel != null) 
+            dictionaryListViewPanel.SetActive(false);
+
+        // Hide the ListView's back button when opening from AR scan
+        if (dictionaryListViewBackButton != null)
+            dictionaryListViewBackButton.SetActive(false);
+
+        // Hide the header when opening from AR scan
+        if (dictionaryHeader != null)
+            dictionaryHeader.SetActive(false);
+
+        // 2. Điền dữ liệu vào Dictionary
+        if (dictionaryUI != null)
+        {
+            dictionaryUI.gameObject.SetActive(true); // Đảm bảo panel detail hiện
+            if (currentDetectedWord != null)
+            {
+                dictionaryUI.DisplayWord(currentDetectedWord, fromARView: true);
+            }
+            else
+            {
+                // Fallback: dùng dữ liệu legacy (objectName/objectDescription) nếu chưa có WordData
+                var temp = ScriptableObject.CreateInstance<WordData>();
+                temp.englishName = string.IsNullOrEmpty(objectName) ? "Unknown" : objectName;
+                temp.vietnameseName = string.IsNullOrEmpty(objectName) ? "Không rõ" : objectName;
+                temp.description = objectDescription;
+                dictionaryUI.DisplayWord(temp, fromARView: true);
+                Debug.LogWarning("Dictionary opened with legacy data (no WordData set).");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("DictionaryUI component not found! Make sure to assign it in the inspector.");
+        }
+        
+        // DON'T reset scan state here - only reset when actually going back
+    }
+
+    /// <summary>
+    /// Set the detected word when AR camera detects a card
+    /// This should be called by your Vuforia AR detection system
+    /// </summary>
+    public void SetDetectedWord(string wordID)
+    {
+        detectedWordID = wordID;
+        if (wordDatabase != null)
+        {
+            currentDetectedWord = wordDatabase.GetWordByID(wordID);
+            if (currentDetectedWord != null)
+            {
+                Debug.Log($"Word detected: {currentDetectedWord.englishName} ({currentDetectedWord.vietnameseName})");
+            }
+        }
+    }
+
+    // --- HÀM 4: Gắn vào nút RESET / RESCAN ---
+    public void OnResetClicked()
+    {
+        ResetScanState();
+    }
+
+    /// <summary>
+    /// Đưa màn Scan về trạng thái ban đầu (chưa quét gì)
+    /// </summary>
+    private void ResetScanState()
+    {
+        isScanning = false;
+        currentDetectedWord = null;
+
+        // Hiện panel hướng dẫn và scan frame
+        if (scanInstruction != null) scanInstruction.SetActive(true);
+        if (scanFrame != null) scanFrame.SetActive(true);
+
+        // Ẩn model 3D và các nút
+        if (model3D != null) model3D.SetActive(false);
+        if (viewInfoButton != null) viewInfoButton.SetActive(false);
+        if (quizButton != null) quizButton.SetActive(false);
+        
+        // Reset button should be HIDDEN in initial state (only show when object is detected)
+        if (resetButton != null) resetButton.SetActive(false);
+        
+        // Stimulate button should be VISIBLE in initial state
+        if (stimulateButton != null) stimulateButton.SetActive(true);
+
+        // Tắt hiệu ứng scan
+        if (scanFX != null) scanFX.SetActive(false);
+        
+        // Also hide dictionary panels when resetting
+        if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+        if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
+    }
+
+    /// <summary>
+    /// Coroutine giả lập quá trình quét: hiện FX + chờ 2-3s rồi mới thấy model 3D
+    /// </summary>
+    private System.Collections.IEnumerator MockScanRoutine()
+    {
+        isScanning = true;
+
+        // Bật hướng dẫn + hiệu ứng quét + scan frame
+        if (scanInstruction != null) scanInstruction.SetActive(true);
+        if (scanFX != null) scanFX.SetActive(true);
+        if (scanFrame != null) scanFrame.SetActive(true); // Show scan frame during scanning
+        if (stimulateButton != null) stimulateButton.SetActive(false); // Ẩn nút Scan khi đang quét
+        if (resetButton != null) resetButton.SetActive(false); // Ẩn nút Reset khi đang quét
+
+        // Ẩn model & các nút trong lúc đang quét
+        if (model3D != null) model3D.SetActive(false);
+        if (viewInfoButton != null) viewInfoButton.SetActive(false);
+        if (quizButton != null) quizButton.SetActive(false);
+
+        // Chờ thời gian giả lập
+        yield return new WaitForSeconds(fakeScanDelay);
+
+        // Giả lập: đã nhận diện xong object
+        if (scanInstruction != null) scanInstruction.SetActive(false);
+        if (scanFX != null) scanFX.SetActive(false);
+        if (scanFrame != null) scanFrame.SetActive(false); // Hide scan frame when model is detected
+
+        if (model3D != null) model3D.SetActive(true);
+
+        // Lấy dữ liệu từ database
+        if (wordDatabase != null && !string.IsNullOrEmpty(detectedWordID))
+        {
+            currentDetectedWord = wordDatabase.GetWordByID(detectedWordID);
+            if (currentDetectedWord != null)
+            {
+                Debug.Log($"Detected word: {currentDetectedWord.englishName}");
+            }
+        }
+
+        // After detection: Hide Stimulate button, show Reset button
+        if (stimulateButton != null) stimulateButton.SetActive(false);
+        if (resetButton != null) resetButton.SetActive(true);
+
+        // Cho phép bấm Dictionary / Quiz sau khi người dùng chạm vào model (xử lý trong Update)
+        isScanning = false;
+    }
+
+    // --- HÀM 3: Tự động phát hiện click vào vật thể 3D ---
+    void Update()
+    {
+        // Nếu vật thể đang hiện, kiểm tra chuột click
+        if (model3D != null && model3D.activeSelf && Input.GetMouseButtonDown(0))
+        {
+            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            RaycastHit hit;
+
+            if (Physics.Raycast(ray, out hit))
+            {
+                if (hit.collider.gameObject == model3D)
+                {
+                    Debug.Log("Đã bấm vào quả táo!");
+                    if (viewInfoButton != null) viewInfoButton.SetActive(true); // Hiện nút xem thông tin
+                    if (quizButton != null) quizButton.SetActive(true); // Hiện nút quiz (optional)
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Managers\SceneLoader.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class SceneLoader : MonoBehaviour
+{
+    public static SceneLoader Instance { get; private set; }
+
+    void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    public void LoadScene(string sceneName)
+    {
+        SceneManager.LoadScene(sceneName);
+    }
+
+    public void LoadHomeScene() => LoadScene("HomeScene");
+    public void LoadScanScene() => LoadScene("ScanScene");
+    public void LoadARViewScene() => LoadScene("ARViewScene");
+    public void LoadQuizScene() => LoadScene("QuizScene");
+    public void LoadDictionaryScene() => LoadScene("DictionaryScene");
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Test Env\SimpleARTrigger.cs
+// ==========================================
+
+using UnityEngine;
+
+/// <summary>
+/// Script này dùng cho trường hợp Model ĐÃ ĐƯỢC GẮN LÀM CON của Image Target.
+/// Cập nhật: Đã tích hợp với hệ thống AudioManager tập trung.
+/// </summary>
+public class SimpleARTrigger : MonoBehaviour
+{
+    [Header("Setup")]
+    [Tooltip("Kéo object Model (con) vào đây (Vd: PF_Cow)")]
+    [SerializeField] private GameObject linkedModel;
+
+    [Header("Optional Audio")]
+    [Tooltip("Kéo file âm thanh đọc tên vào đây (Snd_Name_Cow). ĐỂ TRỐNG nếu Model đã tự phát tiếng khi hiện!")]
+    [SerializeField] private AudioClip namePronunciation;
+
+    private void Start()
+    {
+        // 1. Luôn ẩn model lúc bắt đầu game
+        if (linkedModel != null)
+        {
+            linkedModel.SetActive(false);
+        }
+        else
+        {
+            Debug.LogError($"[SimpleARTrigger] {gameObject.name} chưa được gắn Model con!");
+        }
+    }
+
+    // --- GẮN VÀO SỰ KIỆN ON TARGET FOUND CỦA VUFORIA ---
+    public void OnTargetFound()
+    {
+        Debug.Log($"[SimpleARTrigger] Tìm thấy: {gameObject.name}");
+
+        // 1. Hiện Model lên
+        if (linkedModel != null)
+        {
+            linkedModel.SetActive(true);
+            // LƯU Ý: Nếu linkedModel có script AnimalInteraction, nó sẽ tự kích hoạt OnEnable và phát tiếng ở đó.
+        }
+
+        // 2. (Tùy chọn) Gọi AudioManager phát tiếng
+        // Chỉ chạy nếu bạn ĐÃ GẮN AudioClip vào biến namePronunciation
+        if (namePronunciation != null)
+        {
+            if (AudioManager.Instance != null)
+            {
+                // Dùng kênh Voice cho giọng đọc tên
+                AudioManager.Instance.PlayVoice(namePronunciation);
+            }
+            else
+            {
+                Debug.LogWarning("Không tìm thấy AudioManager! Hãy đảm bảo đã tạo nó trong Scene.");
+            }
+        }
+    }
+
+    // --- GẮN VÀO SỰ KIỆN ON TARGET LOST CỦA VUFORIA ---
+    public void OnTargetLost()
+    {
+        Debug.Log($"[SimpleARTrigger] Mất dấu: {gameObject.name}");
+
+        // Ẩn Model đi
+        if (linkedModel != null)
+        {
+            linkedModel.SetActive(false);
+        }
+
+        // Không cần stop âm thanh. 
+        // Nếu đang đọc dở "This is a...", cứ để nó đọc hết câu cho tự nhiên.
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\ARViewController.cs
+// ==========================================
+
+
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryListView.cs
+// ==========================================
+
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// Dictionary List View - Shows a scrollable grid of all words when opening Dictionary from Home
+/// </summary>
+public class DictionaryListView : MonoBehaviour
+{
+    [Header("UI References")]
+    [SerializeField] private Transform wordListContainer; // ScrollView Content transform (must have Grid Layout Group)
+    [SerializeField] private GameObject wordItemPrefab;   // Prefab for each word item in the grid
+    [SerializeField] private DictionaryUI dictionaryDetailView; // Reference to detail view
+    [SerializeField] private GameObject listViewPanel;    // Panel showing the grid
+    [SerializeField] private GameObject detailViewPanel;  // Panel showing word details
+    [SerializeField] private GameObject listViewBackButton; // Button_Back in Panel_ListView (to hide in detail view)
+    [SerializeField] private GameObject header; // Header for list view
+
+    [Header("Database")]
+    [SerializeField] private WordDatabase wordDatabase;
+
+    [Header("Search")]
+    [SerializeField] private TMP_InputField searchInputField;
+    [SerializeField] private Button searchButton;
+
+    [Header("Grid Settings")]
+    [SerializeField] private int columnsPerRow = 2; // Number of columns in the grid (default: 2 columns)
+    [SerializeField] private Vector2 cellSize = new Vector2(180, 220); // Size of each grid cell
+    [SerializeField] private Vector2 spacing = new Vector2(10, 10); // Spacing between grid items
+    
+    [Header("Grid Padding")]
+    [SerializeField] private int paddingLeft = 10;
+    [SerializeField] private int paddingRight = 10;
+    [SerializeField] private int paddingTop = 10;
+    [SerializeField] private int paddingBottom = 10;
+
+    private List<WordItemUI> currentWordItems = new List<WordItemUI>();
+    private bool isInitialized = false; // Track if we've loaded words already
+    private GridLayoutGroup cachedGridLayout; // Cache the grid layout component
+
+    void Awake()
+    {
+        // Cache the grid layout component
+        if (wordListContainer != null)
+        {
+            cachedGridLayout = wordListContainer.GetComponent<GridLayoutGroup>();
+            if (cachedGridLayout == null)
+            {
+                cachedGridLayout = wordListContainer.gameObject.AddComponent<GridLayoutGroup>();
+            }
+        }
+    }
+
+    void OnEnable()
+    {
+        // Show list view first
+        ShowListView();
+
+        // Setup search listeners
+        if (searchButton != null)
+            searchButton.onClick.AddListener(OnSearchClicked);
+        
+        if (searchInputField != null)
+            searchInputField.onValueChanged.AddListener(OnSearchTextChanged);
+
+        // Only load word list once or if list is empty
+        if (!isInitialized || currentWordItems.Count == 0)
+        {
+            LoadWordList();
+        }
+    }
+
+    void OnDisable()
+    {
+        // Remove search listeners
+        if (searchButton != null)
+            searchButton.onClick.RemoveListener(OnSearchClicked);
+        
+        if (searchInputField != null)
+            searchInputField.onValueChanged.RemoveListener(OnSearchTextChanged);
+    }
+
+    /// <summary>
+    /// Load all words from database and display in grid
+    /// </summary>
+    public void LoadWordList()
+    {
+        if (wordDatabase == null)
+        {
+            Debug.LogWarning("DictionaryListView: WordDatabase is not assigned!");
+            return;
+        }
+
+        if (wordListContainer == null)
+        {
+            Debug.LogWarning("DictionaryListView: Word List Container is not assigned!");
+            return;
+        }
+
+        if (wordItemPrefab == null)
+        {
+            Debug.LogWarning("DictionaryListView: Word Item Prefab is not assigned!");
+            return;
+        }
+
+        // Setup Grid Layout Group ONCE
+        if (!isInitialized)
+        {
+            SetupGridLayout();
+        }
+
+        // Clear existing items safely
+        ClearWordList();
+
+        // Get all words from database
+        List<WordData> allWords = wordDatabase.GetAllWords();
+        
+        if (allWords == null || allWords.Count == 0)
+        {
+            Debug.LogWarning("DictionaryListView: No words found in database!");
+            return;
+        }
+
+        // Create UI items for each word in the grid
+        foreach (WordData wordData in allWords)
+        {
+            GameObject itemObj = Instantiate(wordItemPrefab, wordListContainer);
+            WordItemUI wordItem = itemObj.GetComponent<WordItemUI>();
+            
+            if (wordItem == null)
+            {
+                // If prefab doesn't have WordItemUI, add it
+                wordItem = itemObj.AddComponent<WordItemUI>();
+            }
+            
+            wordItem.Setup(wordData, this);
+            currentWordItems.Add(wordItem);
+        }
+
+        isInitialized = true;
+        Debug.Log($"DictionaryListView: Loaded {allWords.Count} words in grid");
+    }
+
+    /// <summary>
+    /// Setup Grid Layout Group component on the container - ONLY CALLED ONCE
+    /// </summary>
+    private void SetupGridLayout()
+    {
+        if (cachedGridLayout == null)
+        {
+            Debug.LogError("DictionaryListView: Grid Layout Group is not initialized!");
+            return;
+        }
+
+        // Configure grid settings using the inspector values
+        cachedGridLayout.cellSize = cellSize;
+        cachedGridLayout.spacing = spacing;
+        
+        // Set padding using individual values
+        cachedGridLayout.padding = new RectOffset(paddingLeft, paddingRight, paddingTop, paddingBottom);
+        
+        cachedGridLayout.startCorner = GridLayoutGroup.Corner.UpperLeft;
+        cachedGridLayout.startAxis = GridLayoutGroup.Axis.Horizontal;
+        cachedGridLayout.childAlignment = TextAnchor.UpperLeft;
+        cachedGridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        cachedGridLayout.constraintCount = columnsPerRow;
+
+        Debug.Log($"Grid Layout configured: CellSize={cellSize}, Spacing={spacing}, Columns={columnsPerRow}, Padding=({paddingLeft},{paddingRight},{paddingTop},{paddingBottom})");
+    }
+
+    /// <summary>
+    /// Show word detail view when a word is clicked
+    /// </summary>
+    public void ShowWordDetail(WordData wordData)
+    {
+        if (dictionaryDetailView != null && wordData != null)
+        {
+            // Hide list, show detail
+            if (listViewPanel != null)
+                listViewPanel.SetActive(false);
+            
+            if (detailViewPanel != null)
+                detailViewPanel.SetActive(true);
+
+            // Hide the ListView's back button when showing detail
+            if (listViewBackButton != null)
+                listViewBackButton.SetActive(false);
+
+            // Hide header in detail view
+            if (header != null)
+                header.SetActive(false);
+
+            // Display word in detail view
+            dictionaryDetailView.DisplayWord(wordData, fromARView: false);
+        }
+    }
+
+    /// <summary>
+    /// Return to list view from detail view
+    /// </summary>
+    public void BackToListView()
+    {
+        ShowListView();
+    }
+
+    /// <summary>
+    /// Đảm bảo chỉ hiện panel danh sách, ẩn panel chi tiết.
+    /// Có thể gọi từ SimpleMenuController khi mở Dictionary từ Home.
+    /// </summary>
+    public void ShowListView()
+    {
+        if (listViewPanel != null)
+            listViewPanel.SetActive(true);
+        
+        if (detailViewPanel != null)
+            detailViewPanel.SetActive(false);
+
+        // Show the ListView's back button when returning to list
+        if (listViewBackButton != null)
+            listViewBackButton.SetActive(true);
+
+        // Show header in list view
+        if (header != null)
+            header.SetActive(true);
+    }
+
+    /// <summary>
+    /// Filter words based on search text
+    /// </summary>
+    private void OnSearchTextChanged(string searchText)
+    {
+        FilterWords(searchText);
+    }
+
+    private void OnSearchClicked()
+    {
+        if (searchInputField != null)
+        {
+            FilterWords(searchInputField.text);
+        }
+    }
+
+    private void FilterWords(string searchText)
+    {
+        if (string.IsNullOrEmpty(searchText))
+        {
+            // Show all words
+            foreach (var item in currentWordItems)
+            {
+                if (item != null && item.gameObject != null)
+                    item.gameObject.SetActive(true);
+            }
+            return;
+        }
+
+        searchText = searchText.ToLower();
+        foreach (var item in currentWordItems)
+        {
+            if (item != null && item.gameObject != null && item.WordData != null)
+            {
+                bool matches = item.WordData.englishName.ToLower().Contains(searchText) ||
+                              item.WordData.vietnameseName.ToLower().Contains(searchText);
+                item.gameObject.SetActive(matches);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clear word list safely - handles null references
+    /// </summary>
+    private void ClearWordList()
+    {
+        // Destroy all child objects in the container
+        if (wordListContainer != null)
+        {
+            // Get all children and destroy them
+            foreach (Transform child in wordListContainer)
+            {
+                if (child != null && child.gameObject != null)
+                {
+                    Destroy(child.gameObject);
+                }
+            }
+        }
+
+        // Clear the list (remove null references too)
+        if (currentWordItems != null)
+        {
+            currentWordItems.Clear();
+        }
+        else
+        {
+            // Initialize list if it was null
+            currentWordItems = new List<WordItemUI>();
+        }
+    }
+
+    /// <summary>
+    /// Force reload the word list
+    /// </summary>
+    public void ReloadWordList()
+    {
+        isInitialized = false;
+        LoadWordList();
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryUI.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// Dictionary UI - Displays word information in detail view
+/// </summary>
+public class DictionaryUI : MonoBehaviour
+{
+    [Header("UI References")]
+    [SerializeField] private TextMeshProUGUI englishNameText;
+    [SerializeField] private TextMeshProUGUI vietnameseNameText;
+    [SerializeField] private TextMeshProUGUI pronunciationText;
+    [SerializeField] private TextMeshProUGUI descriptionText;
+    [SerializeField] private TextMeshProUGUI vietnameseDescriptionText;
+    [SerializeField] private Image iconImage;
+    [SerializeField] private Button playPronunciationButton;
+    [SerializeField] private Button backButton;
+    [SerializeField] private Button homeButton;
+
+    // REMOVED: No longer need local audioSource
+    // [Header("Audio")]
+    // [SerializeField] private AudioSource audioSource;
+
+    [Header("Navigation")]
+    [SerializeField] private GameObject homePanel;
+    [SerializeField] private GameObject scanPanel;
+    [SerializeField] private SimpleMenuController menuController;
+    [SerializeField] private ARScanFeature arScanFeature;
+    [SerializeField] private DictionaryListView listView;
+
+    private WordData currentWordData;
+    private bool cameFromARView = false;
+
+    void Awake()
+    {
+        // REMOVED: No longer create local AudioSource
+        // if (audioSource == null)
+        // {
+        //     audioSource = gameObject.AddComponent<AudioSource>();
+        //     audioSource.playOnAwake = false;
+        // }
+    }
+
+    void OnEnable()
+    {
+        if (playPronunciationButton != null)
+            playPronunciationButton.onClick.AddListener(PlayPronunciation);
+        
+        if (backButton != null)
+            backButton.onClick.AddListener(OnBackClicked);
+        
+        if (homeButton != null)
+            homeButton.onClick.AddListener(OnHomeClicked);
+    }
+
+    void OnDisable()
+    {
+        if (playPronunciationButton != null)
+            playPronunciationButton.onClick.RemoveListener(PlayPronunciation);
+        
+        if (backButton != null)
+            backButton.onClick.RemoveListener(OnBackClicked);
+        
+        if (homeButton != null)
+            homeButton.onClick.RemoveListener(OnHomeClicked);
+    }
+
+    public void DisplayWord(WordData wordData, bool fromARView = false)
+    {
+        if (wordData == null)
+        {
+            Debug.LogWarning("DictionaryUI: WordData is null!");
+            return;
+        }
+
+        currentWordData = wordData;
+        cameFromARView = fromARView;
+
+        if (englishNameText != null)
+            englishNameText.text = wordData.englishName;
+
+        if (vietnameseNameText != null)
+            vietnameseNameText.text = wordData.vietnameseName;
+
+        if (pronunciationText != null)
+        {
+            if (!string.IsNullOrEmpty(wordData.pronunciation))
+            {
+                pronunciationText.text = wordData.pronunciation;
+                pronunciationText.gameObject.SetActive(true);
+            }
+            else
+            {
+                pronunciationText.gameObject.SetActive(false);
+            }
+        }
+
+        if (descriptionText != null)
+            descriptionText.text = wordData.description;
+
+        if (vietnameseDescriptionText != null)
+        {
+            if (!string.IsNullOrEmpty(wordData.vietnameseDescription))
+            {
+                vietnameseDescriptionText.text = wordData.vietnameseDescription;
+                vietnameseDescriptionText.gameObject.SetActive(true);
+            }
+            else
+            {
+                vietnameseDescriptionText.gameObject.SetActive(false);
+            }
+        }
+
+        if (iconImage != null && wordData.icon2D != null)
+        {
+            iconImage.sprite = wordData.icon2D;
+            iconImage.gameObject.SetActive(true);
+        }
+        else if (iconImage != null)
+        {
+            iconImage.gameObject.SetActive(false);
+        }
+
+        if (playPronunciationButton != null)
+        {
+            playPronunciationButton.interactable = (wordData.audioPronounce != null);
+        }
+    }
+
+    // FIXED: Use AudioManager instead of local AudioSource
+    public void PlayPronunciation()
+    {
+        if (currentWordData == null)
+        {
+            Debug.LogWarning("DictionaryUI: No word data to play pronunciation!");
+            return;
+        }
+
+        if (currentWordData.audioPronounce != null)
+        {
+            // Use AudioManager's Voice channel so it respects volume settings
+            if (AudioManager.Instance != null)
+            {
+                AudioManager.Instance.PlayVoice(currentWordData.audioPronounce);
+                Debug.Log($"Playing pronunciation for: {currentWordData.englishName}");
+            }
+            else
+            {
+                Debug.LogError("DictionaryUI: AudioManager not found!");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("DictionaryUI: Pronunciation audio clip is missing!");
+        }
+    }
+
+    public void OnBackClicked()
+    {
+        if (cameFromARView && scanPanel != null)
+        {
+            gameObject.SetActive(false);
+            
+            Transform parentPanel = transform.parent;
+            if (parentPanel != null && parentPanel.gameObject != gameObject)
+            {
+                parentPanel.gameObject.SetActive(false);
+            }
+            
+            scanPanel.SetActive(true);
+            
+            if (arScanFeature != null)
+            {
+                arScanFeature.OnBackFromDictionary();
+            }
+        }
+        else
+        {
+            if (listView != null)
+            {
+                gameObject.SetActive(false);
+                listView.BackToListView();
+            }
+            else
+            {
+                Debug.LogWarning("DictionaryUI: listView reference is not assigned!");
+            }
+        }
+    }
+
+    public void OnHomeClicked()
+    {
+        if (menuController != null)
+        {
+            menuController.BackToHome();
+        }
+        else
+        {
+            Debug.LogWarning("DictionaryUI: menuController reference is not assigned!");
+        }
+    }
+
+    public void ClearDisplay()
+    {
+        currentWordData = null;
+        
+        if (englishNameText != null)
+            englishNameText.text = "";
+        
+        if (vietnameseNameText != null)
+            vietnameseNameText.text = "";
+
+        if (pronunciationText != null)
+        {
+            pronunciationText.text = "";
+            pronunciationText.gameObject.SetActive(false);
+        }
+        
+        if (descriptionText != null)
+            descriptionText.text = "";
+
+        if (vietnameseDescriptionText != null)
+        {
+            vietnameseDescriptionText.text = "";
+            vietnameseDescriptionText.gameObject.SetActive(false);
+        }
+        
+        if (iconImage != null)
+            iconImage.gameObject.SetActive(false);
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\HomeUI.cs
+// ==========================================
+
+
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\QuizManager.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using System.Collections.Generic;
+using System.Linq;
+
+/// <summary>
+/// Quiz Question Data Structure
+/// </summary>
+[System.Serializable]
+public class QuizQuestion
+{
+    [Header("Visual")]
+    public Sprite image;
+    
+    [Header("Question Text")]
+    public string questionEn;
+    public string questionVi;
+    
+    [Header("Answers")]
+    public string[] answers = new string[4];
+    public int correctIndex;
+    
+    [Header("Reference")]
+    public string wordID;
+    
+    [Header("Hint Audio")]
+    public AudioClip hintSound; // Animal sound for hint
+}
+
+/// <summary>
+/// Quiz Manager - Handles quiz gameplay
+/// </summary>
+public class QuizManager : MonoBehaviour
+{
+    [Header("UI - Question Card")]
+    public Image imageAnimal;
+    public TextMeshProUGUI textProgress;
+    public TextMeshProUGUI textQuestionEn;
+    public TextMeshProUGUI textQuestionVi;
+    public Button hintButton;
+
+    [Header("UI - Answer Buttons")]
+    public Button[] answerButtons;
+
+    [Header("Quiz Data")]
+    public QuizQuestion[] questions;
+    public WordDatabase wordDatabase;
+
+    [Header("Audio")]
+    // REMOVED: No longer need local audioSource for hints
+    // public AudioSource audioSource;
+    public AudioClip soundCorrect;
+    public AudioClip soundWrong;
+
+    [Header("Settings")]
+    public Color correctColor = Color.green;
+    public Color wrongColor = Color.red;
+    public Color defaultColor = Color.white;
+    public float nextQuestionDelay = 2f;
+
+    [Header("Auto-Generate Settings")]
+    public bool autoGenerateOnStart = false;
+    public int numberOfQuestions = 10;
+
+    [Header("Hint Settings")]
+    public int maxHintsPerQuestion = 3;
+    public float hintCooldown = 2f;
+
+    [Header("Debug")]
+    public bool enableDebugLogs = true;
+
+    private int currentQuestionIndex = 0;
+    private bool isAnswered = false;
+    private int correctAnswersCount = 0;
+    private Image[] buttonImages;
+    private int hintsUsedThisQuestion = 0;
+    private float lastHintTime = 0f;
+
+    void Start()
+    {
+        // REMOVED: No longer create local audioSource
+        // if (audioSource == null)
+        // {
+        //     audioSource = gameObject.AddComponent<AudioSource>();
+        //     audioSource.playOnAwake = false;
+        // }
+
+        CacheButtonImages();
+
+        if (autoGenerateOnStart && wordDatabase != null)
+        {
+            GenerateQuizFromDatabase(numberOfQuestions);
+        }
+
+        ResetQuiz();
+    }
+
+    void OnEnable()
+    {
+        if (autoGenerateOnStart && wordDatabase != null && (questions == null || questions.Length == 0))
+        {
+            GenerateQuizFromDatabase(numberOfQuestions);
+        }
+
+        ResetQuiz();
+    }
+
+    void CacheButtonImages()
+    {
+        buttonImages = new Image[answerButtons.Length];
+        for (int i = 0; i < answerButtons.Length; i++)
+        {
+            if (answerButtons[i] != null)
+            {
+                buttonImages[i] = answerButtons[i].GetComponent<Image>();
+            }
+        }
+    }
+
+    public void ResetQuiz()
+    {
+        currentQuestionIndex = 0;
+        correctAnswersCount = 0;
+        isAnswered = false;
+
+        if (questions != null && questions.Length > 0)
+        {
+            ShowQuestion();
+        }
+        else
+        {
+            Debug.LogWarning("[QuizManager] No questions available!");
+        }
+    }
+
+    void ShowQuestion()
+    {
+        if (questions == null || questions.Length == 0)
+        {
+            Debug.LogError("[QuizManager] No questions to show!");
+            return;
+        }
+
+        if (currentQuestionIndex >= questions.Length)
+        {
+            ShowQuizComplete();
+            return;
+        }
+
+        QuizQuestion q = questions[currentQuestionIndex];
+        isAnswered = false;
+        hintsUsedThisQuestion = 0;
+
+        if (imageAnimal != null && q.image != null)
+        {
+            imageAnimal.sprite = q.image;
+            imageAnimal.gameObject.SetActive(true);
+        }
+        else if (imageAnimal != null)
+        {
+            imageAnimal.gameObject.SetActive(false);
+        }
+
+        if (textProgress != null)
+        {
+            textProgress.text = $"Question {currentQuestionIndex + 1} of {questions.Length}";
+        }
+
+        if (textQuestionEn != null)
+        {
+            textQuestionEn.text = q.questionEn;
+        }
+
+        if (textQuestionVi != null)
+        {
+            textQuestionVi.text = q.questionVi;
+        }
+
+        if (hintButton != null)
+        {
+            hintButton.interactable = true;
+            hintButton.gameObject.SetActive(true);
+        }
+
+        for (int i = 0; i < answerButtons.Length; i++)
+        {
+            if (answerButtons[i] == null) continue;
+
+            answerButtons[i].interactable = true;
+            
+            if (buttonImages[i] != null)
+            {
+                buttonImages[i].color = defaultColor;
+            }
+
+            TextMeshProUGUI buttonText = answerButtons[i].GetComponentInChildren<TextMeshProUGUI>();
+            if (buttonText != null && i < q.answers.Length)
+            {
+                buttonText.text = q.answers[i];
+            }
+
+            answerButtons[i].gameObject.SetActive(true);
+        }
+
+        if (enableDebugLogs)
+        {
+            Debug.Log($"[QuizManager] Showing question {currentQuestionIndex + 1}: {q.questionEn}");
+        }
+    }
+
+    // FIXED: Use AudioManager for hint sound
+    public void OnHintButtonClicked()
+    {
+        if (isAnswered) return;
+        if (questions == null || currentQuestionIndex >= questions.Length) return;
+
+        if (Time.time - lastHintTime < hintCooldown)
+        {
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[QuizManager] Hint on cooldown. Wait {hintCooldown - (Time.time - lastHintTime):F1}s");
+            }
+            return;
+        }
+
+        if (hintsUsedThisQuestion >= maxHintsPerQuestion)
+        {
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[QuizManager] Maximum hints ({maxHintsPerQuestion}) used for this question");
+            }
+            
+            if (hintButton != null)
+            {
+                hintButton.interactable = false;
+            }
+            return;
+        }
+
+        QuizQuestion q = questions[currentQuestionIndex];
+
+        // FIXED: Use AudioManager's SFX channel instead of local audioSource
+        if (q.hintSound != null)
+        {
+            if (AudioManager.Instance != null)
+            {
+                AudioManager.Instance.PlaySFX(q.hintSound, false);
+                hintsUsedThisQuestion++;
+                lastHintTime = Time.time;
+
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"[QuizManager] Played hint sound ({hintsUsedThisQuestion}/{maxHintsPerQuestion})");
+                }
+
+                if (hintsUsedThisQuestion >= maxHintsPerQuestion && hintButton != null)
+                {
+                    hintButton.interactable = false;
+                }
+            }
+            else
+            {
+                Debug.LogError("[QuizManager] AudioManager not found!");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[QuizManager] No hint sound available for this question");
+        }
+    }
+
+    public void OnAnswerClicked(int answerIndex)
+    {
+        if (isAnswered) return;
+        if (questions == null || currentQuestionIndex >= questions.Length) return;
+        if (answerIndex < 0 || answerIndex >= answerButtons.Length) return;
+
+        QuizQuestion q = questions[currentQuestionIndex];
+        bool isCorrect = (answerIndex == q.correctIndex);
+
+        isAnswered = true;
+
+        if (hintButton != null)
+        {
+            hintButton.interactable = false;
+        }
+
+        foreach (Button btn in answerButtons)
+        {
+            if (btn != null) btn.interactable = false;
+        }
+
+        if (isCorrect)
+        {
+            if (buttonImages[answerIndex] != null)
+            {
+                buttonImages[answerIndex].color = correctColor;
+            }
+
+            correctAnswersCount++;
+
+            // FIXED: Use AudioManager for correct sound
+            if (soundCorrect != null && AudioManager.Instance != null)
+            {
+                AudioManager.Instance.PlaySFX(soundCorrect, false);
+            }
+
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[QuizManager] ✓ Correct! Score: {correctAnswersCount}/{currentQuestionIndex + 1}");
+            }
+
+            Invoke(nameof(NextQuestion), nextQuestionDelay);
+        }
+        else
+        {
+            if (buttonImages[answerIndex] != null)
+            {
+                buttonImages[answerIndex].color = wrongColor;
+            }
+
+            if (q.correctIndex >= 0 && q.correctIndex < buttonImages.Length && buttonImages[q.correctIndex] != null)
+            {
+                buttonImages[q.correctIndex].color = correctColor;
+            }
+
+            // FIXED: Use AudioManager for wrong sound
+            if (soundWrong != null && AudioManager.Instance != null)
+            {
+                AudioManager.Instance.PlaySFX(soundWrong, false);
+            }
+
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[QuizManager] ✗ Wrong! Correct answer was: {q.answers[q.correctIndex]}");
+            }
+
+            Invoke(nameof(NextQuestion), nextQuestionDelay);
+        }
+    }
+
+    void NextQuestion()
+    {
+        currentQuestionIndex++;
+        ShowQuestion();
+    }
+
+    void ShowQuizComplete()
+    {
+        if (enableDebugLogs)
+        {
+            Debug.Log($"[QuizManager] Quiz Complete! Score: {correctAnswersCount}/{questions.Length}");
+        }
+
+        if (textQuestionEn != null)
+        {
+            textQuestionEn.text = "Quiz Complete!";
+        }
+
+        if (textQuestionVi != null)
+        {
+            textQuestionVi.text = $"Điểm: {correctAnswersCount}/{questions.Length}";
+        }
+
+        if (textProgress != null)
+        {
+            float percentage = (float)correctAnswersCount / questions.Length * 100f;
+            textProgress.text = $"{percentage:F0}%";
+        }
+
+        if (imageAnimal != null)
+        {
+            imageAnimal.gameObject.SetActive(false);
+        }
+
+        if (hintButton != null)
+        {
+            hintButton.gameObject.SetActive(false);
+        }
+
+        foreach (Button btn in answerButtons)
+        {
+            if (btn != null) btn.gameObject.SetActive(false);
+        }
+    }
+
+    public void GenerateQuizFromDatabase(int questionCount = 10)
+    {
+        if (wordDatabase == null)
+        {
+            Debug.LogError("[QuizManager] WordDatabase not assigned!");
+            return;
+        }
+
+        List<WordData> allWords = wordDatabase.GetAllWords();
+        if (allWords == null || allWords.Count < 4)
+        {
+            Debug.LogError("[QuizManager] Not enough words in database to generate quiz! Need at least 4 words.");
+            return;
+        }
+
+        List<QuizQuestion> generatedQuestions = new List<QuizQuestion>();
+
+        List<WordData> shuffled = allWords.OrderBy(x => Random.value).ToList();
+        int count = Mathf.Min(questionCount, shuffled.Count);
+
+        for (int i = 0; i < count; i++)
+        {
+            WordData word = shuffled[i];
+            QuizQuestion q = new QuizQuestion();
+
+            q.wordID = word.id;
+            q.image = word.icon2D;
+            q.questionEn = "What is this animal?";
+            q.questionVi = "đây là con gì?";
+            q.hintSound = word.audioSFX;
+
+            List<string> answerOptions = new List<string>();
+            answerOptions.Add(word.englishName);
+
+            List<WordData> wrongAnswers = allWords
+                .Where(w => w.id != word.id)
+                .OrderBy(x => Random.value)
+                .Take(3)
+                .ToList();
+
+            foreach (var wrongWord in wrongAnswers)
+            {
+                answerOptions.Add(wrongWord.englishName);
+            }
+
+            answerOptions = answerOptions.OrderBy(x => Random.value).ToList();
+
+            q.answers = answerOptions.ToArray();
+            q.correctIndex = answerOptions.IndexOf(word.englishName);
+
+            generatedQuestions.Add(q);
+        }
+
+        questions = generatedQuestions.ToArray();
+
+        if (enableDebugLogs)
+        {
+            Debug.Log($"[QuizManager] Generated {questions.Length} questions from database");
+        }
+
+        if (gameObject.activeInHierarchy)
+        {
+            ResetQuiz();
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\QuizUI.cs
+// ==========================================
+
+
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\ScanUI.cs
+// ==========================================
+
+
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\SettingsUI.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// Settings UI - Manages app settings (Audio, Quiz, etc.)
+/// </summary>
+public class SettingsUI : MonoBehaviour
+{
+    [Header("Audio Settings UI")]
+    public Slider sliderSFX;
+    public Slider sliderVoice;
+    public TextMeshProUGUI textSFXValue;
+    public TextMeshProUGUI textVoiceValue;
+
+    [Header("Quiz Settings UI")]
+    public GameObject quizSettingsPanel;
+    public GameObject quizSettingsOverlay; // NEW: Dark overlay
+    public Slider sliderQuestionCount;
+    public TextMeshProUGUI textQuestionCount;
+    public Toggle toggleAutoGenerate;
+    public Button buttonSaveQuizSettings;
+
+    [Header("Navigation")]
+    public Button buttonBack;
+    public Button buttonOpenQuizSettings;
+    public SimpleMenuController menuController;
+
+    [Header("References")]
+    public QuizManager quizManager;
+
+    private void Start()
+    {
+        // Setup audio sliders
+        if (sliderSFX != null)
+        {
+            sliderSFX.onValueChanged.AddListener(OnSFXVolumeChanged);
+            sliderSFX.value = PlayerPrefs.GetFloat("Settings_SFX", 1f);
+        }
+
+        if (sliderVoice != null)
+        {
+            sliderVoice.onValueChanged.AddListener(OnVoiceVolumeChanged);
+            sliderVoice.value = PlayerPrefs.GetFloat("Settings_Voice", 1f);
+        }
+
+        // Setup quiz settings
+        if (sliderQuestionCount != null)
+        {
+            sliderQuestionCount.onValueChanged.AddListener(OnQuestionCountChanged);
+            sliderQuestionCount.value = PlayerPrefs.GetInt("Quiz_QuestionCount", 10);
+        }
+
+        if (toggleAutoGenerate != null)
+        {
+            toggleAutoGenerate.isOn = PlayerPrefs.GetInt("Quiz_AutoGenerate", 1) == 1;
+        }
+
+        // Setup buttons
+        if (buttonBack != null)
+        {
+            buttonBack.onClick.AddListener(OnBackClicked);
+        }
+
+        if (buttonOpenQuizSettings != null)
+        {
+            buttonOpenQuizSettings.onClick.AddListener(OnOpenQuizSettingsClicked);
+        }
+
+        if (buttonSaveQuizSettings != null)
+        {
+            buttonSaveQuizSettings.onClick.AddListener(OnSaveQuizSettingsClicked);
+        }
+
+        // Initially hide quiz settings panel and overlay
+        if (quizSettingsPanel != null)
+        {
+            quizSettingsPanel.SetActive(false);
+        }
+
+        // NEW: Initially hide overlay
+        if (quizSettingsOverlay != null)
+        {
+            quizSettingsOverlay.SetActive(false);
+        }
+
+        // Update UI text
+        UpdateAudioUI();
+        UpdateQuizUI();
+    }
+
+    void OnDestroy()
+    {
+        if (sliderSFX != null)
+            sliderSFX.onValueChanged.RemoveListener(OnSFXVolumeChanged);
+
+        if (sliderVoice != null)
+            sliderVoice.onValueChanged.RemoveListener(OnVoiceVolumeChanged);
+
+        if (sliderQuestionCount != null)
+            sliderQuestionCount.onValueChanged.RemoveListener(OnQuestionCountChanged);
+
+        if (buttonBack != null)
+            buttonBack.onClick.RemoveListener(OnBackClicked);
+
+        if (buttonOpenQuizSettings != null)
+            buttonOpenQuizSettings.onClick.RemoveListener(OnOpenQuizSettingsClicked);
+
+        if (buttonSaveQuizSettings != null)
+            buttonSaveQuizSettings.onClick.RemoveListener(OnSaveQuizSettingsClicked);
+    }
+
+    // === AUDIO SETTINGS ===
+
+    void OnSFXVolumeChanged(float value)
+    {
+        if (AudioManager.Instance != null)
+        {
+            AudioManager.Instance.SetSFXLevel(value);
+        }
+
+        PlayerPrefs.SetFloat("Settings_SFX", value);
+        PlayerPrefs.Save();
+
+        UpdateAudioUI();
+    }
+
+    void OnVoiceVolumeChanged(float value)
+    {
+        if (AudioManager.Instance != null)
+        {
+            AudioManager.Instance.SetVoiceLevel(value);
+        }
+
+        PlayerPrefs.SetFloat("Settings_Voice", value);
+        PlayerPrefs.Save();
+
+        UpdateAudioUI();
+    }
+
+    void UpdateAudioUI()
+    {
+        if (textSFXValue != null && sliderSFX != null)
+        {
+            textSFXValue.text = $"{(sliderSFX.value * 100):F0}%";
+        }
+
+        if (textVoiceValue != null && sliderVoice != null)
+        {
+            textVoiceValue.text = $"{(sliderVoice.value * 100):F0}%";
+        }
+    }
+
+    // === QUIZ SETTINGS ===
+
+    void OnQuestionCountChanged(float value)
+    {
+        UpdateQuizUI();
+    }
+
+    void UpdateQuizUI()
+    {
+        if (textQuestionCount != null && sliderQuestionCount != null)
+        {
+            textQuestionCount.text = $"{sliderQuestionCount.value:F0} Questions";
+        }
+    }
+
+    public void OnOpenQuizSettingsClicked()
+    {
+        // NEW: Show overlay first (to darken background)
+        if (quizSettingsOverlay != null)
+        {
+            quizSettingsOverlay.SetActive(true);
+        }
+
+        // Then show quiz settings panel on top
+        if (quizSettingsPanel != null)
+        {
+            quizSettingsPanel.SetActive(true);
+        }
+    }
+
+    public void OnSaveQuizSettingsClicked()
+    {
+        if (sliderQuestionCount != null)
+        {
+            int questionCount = (int)sliderQuestionCount.value;
+            PlayerPrefs.SetInt("Quiz_QuestionCount", questionCount);
+
+            // Update QuizManager if assigned
+            if (quizManager != null)
+            {
+                quizManager.numberOfQuestions = questionCount;
+                
+                // FIXED: Regenerate quiz with new settings immediately
+                if (quizManager.autoGenerateOnStart)
+                {
+                    quizManager.GenerateQuizFromDatabase(questionCount);
+                    Debug.Log($"[SettingsUI] Quiz regenerated with {questionCount} questions");
+                }
+            }
+        }
+
+        if (toggleAutoGenerate != null)
+        {
+            int autoGen = toggleAutoGenerate.isOn ? 1 : 0;
+            PlayerPrefs.SetInt("Quiz_AutoGenerate", autoGen);
+
+            // Update QuizManager if assigned
+            if (quizManager != null)
+            {
+                quizManager.autoGenerateOnStart = toggleAutoGenerate.isOn;
+            }
+        }
+
+        PlayerPrefs.Save();
+
+        Debug.Log($"[SettingsUI] Quiz settings saved: {sliderQuestionCount.value} questions, Auto-gen: {toggleAutoGenerate.isOn}");
+
+        // Close quiz settings panel
+        CloseQuizSettings();
+    }
+
+    // NEW: Helper method to close quiz settings (used by Save and Cancel)
+    private void CloseQuizSettings()
+    {
+        if (quizSettingsPanel != null)
+        {
+            quizSettingsPanel.SetActive(false);
+        }
+
+        // NEW: Hide overlay when closing
+        if (quizSettingsOverlay != null)
+        {
+            quizSettingsOverlay.SetActive(false);
+        }
+    }
+
+    public void OnBackClicked()
+    {
+        // Close quiz settings if open
+        if (quizSettingsPanel != null && quizSettingsPanel.activeSelf)
+        {
+            CloseQuizSettings(); // Use helper method
+            return;
+        }
+
+        // Go back to home
+        if (menuController != null)
+        {
+            menuController.BackToHome();
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\WordItemUI.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// UI component for a single word item in the dictionary grid
+/// </summary>
+public class WordItemUI : MonoBehaviour
+{
+    [SerializeField] private TextMeshProUGUI englishNameText;
+    [SerializeField] private TextMeshProUGUI vietnameseNameText;
+    [SerializeField] private Image iconImage;
+    [SerializeField] private Button itemButton;
+
+    public WordData WordData { get; private set; }
+    private DictionaryListView listView;
+
+    void Awake()
+    {
+        if (itemButton != null)
+            itemButton.onClick.AddListener(OnItemClicked);
+    }
+
+    public void Setup(WordData wordData, DictionaryListView parentListView)
+    {
+        WordData = wordData;
+        listView = parentListView;
+
+        if (wordData == null)
+            return;
+
+        if (englishNameText != null)
+            englishNameText.text = wordData.englishName;
+
+        if (vietnameseNameText != null)
+            vietnameseNameText.text = wordData.vietnameseName;
+
+        if (iconImage != null && wordData.icon2D != null)
+        {
+            iconImage.sprite = wordData.icon2D;
+            iconImage.gameObject.SetActive(true);
+        }
+        else if (iconImage != null)
+        {
+            iconImage.gameObject.SetActive(false);
+        }
+    }
+
+    private void OnItemClicked()
+    {
+        if (listView != null && WordData != null)
+        {
+            listView.ShowWordDetail(WordData);
+        }
+    }
+}
+
