@@ -23,7 +23,7 @@ MonoBehaviour:
     th\xE0nh. N\xF3 c\xF3 c\u1EB7p s\u1EEBng l\u1EDBn, oai v\u1EC7 v\xE0 m\u1ECDc
     l\u1EA1i h\xE0ng n\u0103m."
   modelPrefab: {fileID: 2521319995674052539, guid: e8a2965d6d00d3a47bf7c159b49c5040, type: 3}
-  icon2D: {fileID: 0}
+  icon2D: {fileID: 21300000, guid: 3c5553bfd07b29745b943e9f5a95989b, type: 3}
   audioPronounce: {fileID: 8300000, guid: 77d6ea772320bcd4b800972f4312f761, type: 3}
   audioSFX: {fileID: 8300000, guid: 4cdc5096dcce48b41aaecbbfcdd11bac, type: 3}
   hasAnimations: 1
