@@ -1,10 +1,4 @@
 using UnityEngine;
-using UnityEngine.UI;
-
-// IMPORTANT: Only import UnityEditor in Editor mode
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 public class SimpleMenuController : MonoBehaviour
 {
@@ -21,7 +15,7 @@ public class SimpleMenuController : MonoBehaviour
     {
         homePanel.SetActive(false);
         scanPanel.SetActive(true);
-        
+
         ARScanFeature.ClearARScanFlag();
     }
 
@@ -29,7 +23,7 @@ public class SimpleMenuController : MonoBehaviour
     {
         homePanel.SetActive(false);
         dictionaryPanel.SetActive(true);
-        
+
         ARScanFeature.ClearARScanFlag();
     }
 
@@ -37,7 +31,7 @@ public class SimpleMenuController : MonoBehaviour
     {
         homePanel.SetActive(false);
         quizPanel.SetActive(true);
-        
+
         ARScanFeature.ClearARScanFlag();
     }
 
@@ -50,17 +44,10 @@ public class SimpleMenuController : MonoBehaviour
     /// <summary>
     /// Quit the application
     /// </summary>
-    public void QuitApp()
+    public static void QuitApp()
     {
         Debug.Log("[SimpleMenuController] Quitting application...");
-
-        #if UNITY_EDITOR
-        // In Unity Editor: Stop play mode
-        EditorApplication.isPlaying = false;
-        #else
-        // On device/build: Quit application
         Application.Quit();
-        #endif
     }
 
     // --- HÀM CHO NÚT BACK ---
@@ -68,7 +55,7 @@ public class SimpleMenuController : MonoBehaviour
     public void BackToHome()
     {
         ARScanFeature.ClearARScanFlag();
-        
+
         scanPanel.SetActive(false);
         dictionaryPanel.SetActive(false);
         quizPanel.SetActive(false);
