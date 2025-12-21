@@ -485,7 +485,381 @@ public class AddVuforiaEnginePackage
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\AnimalAnimationController.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Core\AppStateManager.cs
+// ==========================================
+
+﻿using UnityEngine;
+using System;
+
+public enum AppState
+{
+    Home,
+    ARScanning,     // Màn hình camera, đang tìm thẻ
+    ARObjectFound,  // Đã thấy thẻ, hiện nút Quiz/Dictionary
+    Quiz,
+    Dictionary
+}
+
+public class AppStateManager : MonoBehaviour
+{
+    public static AppStateManager Instance { get; private set; }
+
+    [Header("Debug Info")]
+    [SerializeField] private AppState _currentState;
+    [SerializeField] private string _currentAnimalID; // Biến để debug xem đang nhận con gì
+
+    // --- EVENTS (CHO UI LẮNG NGHE) ---
+    // 1. Báo tin khi chuyển màn hình (VD: Tắt Home, Bật AR View)
+    public event Action<AppState> OnStateChanged;
+
+    // 2. Báo tin khi xác định được con vật cụ thể (để UI load nội dung tương ứng)
+    public event Action<string> OnAnimalDetected;
+
+    // 3. Báo tin khi AR target bị mất (camera không còn nhìn thấy thẻ)
+    public event Action OnARObjectLost;
+
+    // Property để các script khác có thể lấy tên con vật hiện tại bất cứ lúc nào
+    public string CurrentAnimalID => _currentAnimalID;
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    private void Start()
+    {
+        // Mặc định vào game là ở màn hình Home
+        ChangeState(AppState.Home);
+    }
+
+    // --- CORE LOGIC: QUẢN LÝ TRẠNG THÁI ---
+
+    public void ChangeState(AppState newState)
+    {
+        _currentState = newState;
+        Debug.Log($"[GameManager] State Changed to: {newState}");
+
+        // Bắn tín hiệu cho UIManager biết để bật/tắt Canvas
+        OnStateChanged?.Invoke(newState);
+    }
+
+    // --- CORE LOGIC: GIAO TIẾP VỚI AR (VUFORIA) ---
+
+    // Hàm này được gọi từ script ARContentTrigger
+    public void OnARObjectDetected(string animalID)
+    {
+        // 1. Lưu lại ID (VD: "Cow", "Fox")
+        _currentAnimalID = animalID;
+
+        // 2. Chuyển State sang chế độ tương tác
+        ChangeState(AppState.ARObjectFound);
+
+        // 3. Bắn event kèm dữ liệu để UI cập nhật text/âm thanh
+        Debug.Log($"[GameManager] Detected: {animalID}. Notify UI to update data.");
+        OnAnimalDetected?.Invoke(animalID);
+    }
+
+    // Hàm này được gọi từ script ARContentTrigger khi mất target
+    public void NotifyARObjectLost()
+    {
+        // Khi mất dấu thẻ, quay về trạng thái Scanning
+        Debug.Log("[GameManager] Target Lost. Resetting to Scan mode.");
+
+        _currentAnimalID = null; // Xóa dữ liệu cũ
+        ChangeState(AppState.ARScanning);
+
+        // Bắn event để UI biết
+        OnARObjectLost?.Invoke();
+    }
+
+    // --- HÀM ĐIỀU KHIỂN LUỒNG (Flow Control) ---
+
+    public void StartARScan()
+    {
+        // Được gọi khi bấm nút "Start" ở Home Screen
+        Debug.Log("[GameManager] Starting AR Session...");
+        ChangeState(AppState.ARScanning);
+
+        // LƯU Ý: Đã xóa đoạn Invoke Mockup. 
+        // Giờ đây game sẽ đợi tín hiệu thật từ Camera/ARContentTrigger.
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Core\AudioManager.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.Audio; // Bắt buộc để dùng Mixer
+
+public class AudioManager : MonoBehaviour
+{
+    // Singleton: Đảm bảo chỉ có 1 AudioManager tồn tại
+    public static AudioManager Instance;
+
+    [Header("Components")]
+    [Tooltip("Kéo file MainMixer vào đây")]
+    public AudioMixer mainMixer;
+
+    // THÊM MỚI: 2 Nguồn phát riêng biệt
+    [Header("Audio Sources")]
+    [Tooltip("Kéo AudioSource dành cho SFX vào đây")]
+    public AudioSource sfxSource;
+
+    [Tooltip("Kéo AudioSource dành cho Voice/Pronunciation vào đây")]
+    public AudioSource voiceSource;
+
+    [Header("Settings Keys")]
+    // Tên tham số bạn đã đặt trong bước Expose Parameter
+    private const string MIXER_SFX = "SFXVol";
+    private const string MIXER_VOICE = "VoiceVol";
+
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject); // Giữ cho nó sống khi chuyển cảnh
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    private void Start()
+    {
+        // Tải setting cũ khi bật game. Mặc định là 1 (Max volume)
+        float savedSFX = PlayerPrefs.GetFloat("Settings_SFX", 1f);
+        float savedVoice = PlayerPrefs.GetFloat("Settings_Voice", 1f);
+
+        SetSFXLevel(savedSFX);
+        SetVoiceLevel(savedVoice);
+    }
+
+    // --- HÀM CHO UI GỌI VÀO ---
+
+    // Slider UI sẽ truyền giá trị từ 0 đến 1 vào đây
+    public void SetSFXLevel(float sliderValue)
+    {
+        mainMixer.SetFloat(MIXER_SFX, LogarithmicDb(sliderValue));
+        PlayerPrefs.SetFloat("Settings_SFX", sliderValue); // Lưu lại
+        PlayerPrefs.Save();
+    }
+
+    public void SetVoiceLevel(float sliderValue)
+    {
+        mainMixer.SetFloat(MIXER_VOICE, LogarithmicDb(sliderValue));
+        PlayerPrefs.SetFloat("Settings_Voice", sliderValue); // Lưu lại
+        PlayerPrefs.Save();
+    }
+
+    // --- THÊM MỚI: HÀM PHÁT ÂM THANH ---
+
+    public void PlaySFX(AudioClip clip, bool interrupt = false)
+    {
+        if (clip == null || sfxSource == null) return;
+
+        // Nếu yêu cầu ngắt (interrupt = true), dừng tiếng đang kêu
+        if (interrupt)
+        {
+            sfxSource.Stop();
+        }
+
+        // Phát tiếng mới
+        sfxSource.PlayOneShot(clip);
+    }
+
+    public void PlayVoice(AudioClip clip)
+    {
+        if (clip != null && voiceSource != null)
+        {
+            // Với giọng đọc, ta nên dừng câu cũ trước khi đọc câu mới (tùy chọn)
+            voiceSource.Stop();
+            voiceSource.PlayOneShot(clip);
+        }
+    }
+
+    // --- CÔNG THỨC TOÁN HỌC ---
+    // Chuyển đổi 0-1 (Slider) thành -80dB đến 0dB (Mixer)
+    private float LogarithmicDb(float linear)
+    {
+        linear = Mathf.Clamp(linear, 0.0001f, 1f); // Tránh log(0) gây lỗi
+        return Mathf.Log10(linear) * 20;
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Core\SceneLoader.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class SceneLoader : MonoBehaviour
+{
+    public static SceneLoader Instance { get; private set; }
+
+    void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    public void LoadScene(string sceneName)
+    {
+        SceneManager.LoadScene(sceneName);
+    }
+
+    public void LoadHomeScene() => LoadScene("HomeScene");
+    public void LoadScanScene() => LoadScene("ScanScene");
+    public void LoadARViewScene() => LoadScene("ARViewScene");
+    public void LoadQuizScene() => LoadScene("QuizScene");
+    public void LoadDictionaryScene() => LoadScene("DictionaryScene");
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Data\QuizData.cs
+// ==========================================
+
+using UnityEngine;
+
+/// <summary>
+/// Quiz Data ScriptableObject - stores quiz questions
+/// </summary>
+[CreateAssetMenu(fileName = "QuizData", menuName = "AR Lingo/Quiz Data")]
+public class QuizData : ScriptableObject
+{
+    public QuizQuestion[] questions;
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Data\WordData.cs
+// ==========================================
+
+using UnityEngine;
+
+// Menu giúp click chuột phải tạo file nhanh: Create -> AR Lingo -> Word Data
+[CreateAssetMenu(fileName = "NewWordData", menuName = "AR Lingo/Word Data")]
+public class WordData : ScriptableObject
+{
+    [Header("Identity")]
+    public string id;              // ID duy nhất (vd: "animal_lion")
+
+    [Header("Category")]
+    public WordCategory category;  // NEW: Loại từ (Animal, Plant, Object...)
+
+    [Header("Content")]
+    public string englishName;     // Vd: Lion
+    public string vietnameseName;  // Vd: Sư tử
+    public string pronunciation;   // NEW: Phiên âm (vd: "/ˈlaɪən/")
+    [TextArea]
+    public string description;     // Mô tả ngắn
+    [TextArea]
+    public string vietnameseDescription; // NEW: Mô tả tiếng Việt
+
+    [Header("Assets")]
+    public GameObject modelPrefab; // Prefab 3D con vật (có Animator)
+    public Sprite icon2D;          // Ảnh đại diện cho Dictionary
+    public AudioClip audioPronounce; // File âm thanh đọc tên (Anh/Việt)
+    public AudioClip audioSFX;       // Tiếng kêu con vật (Gầm, sủa...)
+
+    [Header("Animation Settings (Only for Animals)")]
+    public bool hasAnimations;     // NEW: Check if this has animations (auto-set based on category)
+    public string walkAnimationName = "Walk"; // NEW: Tên animation Walk
+    public string attackAnimationName = "Attack"; // NEW: Tên animation Attack
+
+    // Helper: Lấy tên theo ngôn ngữ đang chọn (Sprint sau sẽ cần)
+    public string GetName(bool isEnglish)
+    {
+        return isEnglish ? englishName : vietnameseName;
+    }
+
+    // Helper: Check if this word supports animations (only animals)
+    public bool SupportsAnimations()
+    {
+        return category == WordCategory.Animal && hasAnimations;
+    }
+
+    // Validate on editor changes
+    private void OnValidate()
+    {
+        // Auto-set hasAnimations based on category
+        hasAnimations = (category == WordCategory.Animal);
+    }
+}
+
+// NEW: Enum for word categories
+public enum WordCategory
+{
+    Animal,    // Con vật - có animation
+    Plant,     // Thực vật - không có animation
+    Object,    // Đồ vật - không có animation
+    Food       // Đồ ăn - không có animation
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Data\WordDatabase.cs
+// ==========================================
+
+using System.Collections.Generic;
+using UnityEngine;
+using System.Linq; // Dùng LINQ để tìm kiếm nhanh
+
+[CreateAssetMenu(fileName = "WordDatabase", menuName = "AR Lingo/Database")]
+public class WordDatabase : ScriptableObject
+{
+    [SerializeField] private List<WordData> allWords;
+
+    // Hàm tìm kiếm con vật dựa trên ID (Dùng khi AR Camera scan được target)
+    public WordData GetWordByID(string searchID)
+    {
+        // Tìm trong list xem có con nào trùng ID không
+        return allWords.FirstOrDefault(w => w.id == searchID);
+    }
+
+    // Hàm lấy danh sách ngẫu nhiên để làm Quiz (Sprint sau)
+    public List<WordData> GetRandomWords(int count)
+    {
+        // Shuffle và lấy count phần tử (Logic giả định, cần viết kỹ hơn sau này)
+        return allWords.OrderBy(x => Random.value).Take(count).ToList();
+    }
+
+    // Hàm lấy tất cả các từ (Dùng cho Dictionary List View)
+    public List<WordData> GetAllWords()
+    {
+        return allWords != null ? new List<WordData>(allWords) : new List<WordData>();
+    }
+
+    // Hàm tìm kiếm từ theo tên (English hoặc Vietnamese)
+    public List<WordData> SearchWords(string searchText)
+    {
+        if (string.IsNullOrEmpty(searchText) || allWords == null)
+            return GetAllWords();
+
+        searchText = searchText.ToLower();
+        return allWords.Where(w => 
+            w.englishName.ToLower().Contains(searchText) ||
+            w.vietnameseName.ToLower().Contains(searchText)
+        ).ToList();
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\AR\AnimalAnimationController.cs
 // ==========================================
 
 using UnityEngine;
@@ -610,7 +984,7 @@ public class AnimalAnimationController : MonoBehaviour
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\AnimalInteraction.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\AR\AnimalInteraction.cs
 // ==========================================
 
 using UnityEngine;
@@ -678,13 +1052,12 @@ public class AnimalInteraction : MonoBehaviour
             // Reset trigger cũ để tránh lặp lệnh (Optional)
             _animator.ResetTrigger(actionTriggerName);
             _animator.SetTrigger(actionTriggerName);
-            // Debug.Log($"[AnimalInteraction] Triggered animation: {actionTriggerName}");
         }
     }
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\ARContentTrigger.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\AR\ARContentTrigger.cs
 // ==========================================
 
 ﻿using UnityEngine;
@@ -708,7 +1081,7 @@ public class ARContentTrigger : MonoBehaviour
     {
         if (enableDebugLogs)
             Debug.Log($"[ARContentTrigger] Initialized for target: {wordID}");
-        
+
         if (ar3DModel != null)
         {
             // DEBUG: Log model info at start
@@ -716,7 +1089,7 @@ public class ARContentTrigger : MonoBehaviour
             Debug.Log($"[ARContentTrigger] Model Position: {ar3DModel.transform.localPosition}");
             Debug.Log($"[ARContentTrigger] Model Scale: {ar3DModel.transform.localScale}");
             Debug.Log($"[ARContentTrigger] Model Active Self: {ar3DModel.activeSelf}");
-            
+
             // Check for renderer
             Renderer[] renderers = ar3DModel.GetComponentsInChildren<Renderer>();
             Debug.Log($"[ARContentTrigger] Found {renderers.Length} renderers in model");
@@ -725,7 +1098,7 @@ public class ARContentTrigger : MonoBehaviour
                 string matName = r.sharedMaterial != null ? r.sharedMaterial.name : "None";
                 Debug.Log($"[ARContentTrigger] Renderer: {r.name}, Enabled: {r.enabled}, Material: {matName}");
             }
-            
+
             // Make sure model starts hidden
             ar3DModel.SetActive(false);
             if (enableDebugLogs)
@@ -750,12 +1123,12 @@ public class ARContentTrigger : MonoBehaviour
         if (ar3DModel != null)
         {
             ar3DModel.SetActive(true);
-            
+
             // DEBUG: Check after activation
             Debug.Log($"[ARContentTrigger] ✓ Model activated - Active: {ar3DModel.activeSelf}, ActiveInHierarchy: {ar3DModel.activeInHierarchy}");
             Debug.Log($"[ARContentTrigger] ✓ Model World Position: {ar3DModel.transform.position}");
             Debug.Log($"[ARContentTrigger] ✓ ImageTarget Position: {transform.position}");
-            
+
             if (enableDebugLogs)
                 Debug.Log($"[ARContentTrigger] ✓ 3D Model '{ar3DModel.name}' activated");
         }
@@ -765,9 +1138,9 @@ public class ARContentTrigger : MonoBehaviour
         }
 
         // Notify GameManager
-        if (GameManager.Instance != null)
+        if (AppStateManager.Instance != null)
         {
-            GameManager.Instance.OnARObjectDetected(wordID);
+            AppStateManager.Instance.OnARObjectDetected(wordID);
             if (enableDebugLogs)
                 Debug.Log($"[ARContentTrigger] ✓ Notified GameManager about {wordID}");
         }
@@ -795,392 +1168,15 @@ public class ARContentTrigger : MonoBehaviour
         }
 
         // Notify GameManager
-        if (GameManager.Instance != null)
+        if (AppStateManager.Instance != null)
         {
-            GameManager.Instance.NotifyARObjectLost();
+            AppStateManager.Instance.NotifyARObjectLost();
         }
     }
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\GameManager.cs
-// ==========================================
-
-﻿using UnityEngine;
-using System;
-
-public enum AppState
-{
-    Home,
-    ARScanning,     // Màn hình camera, đang tìm thẻ
-    ARObjectFound,  // Đã thấy thẻ, hiện nút Quiz/Dictionary
-    Quiz,
-    Dictionary
-}
-
-public class GameManager : MonoBehaviour
-{
-    public static GameManager Instance { get; private set; }
-
-    [Header("Debug Info")]
-    [SerializeField] private AppState _currentState;
-    [SerializeField] private string _currentAnimalID; // Biến để debug xem đang nhận con gì
-
-    // --- EVENTS (CHO UI LẮNG NGHE) ---
-    // 1. Báo tin khi chuyển màn hình (VD: Tắt Home, Bật AR View)
-    public event Action<AppState> OnStateChanged;
-
-    // 2. Báo tin khi xác định được con vật cụ thể (để UI load nội dung tương ứng)
-    public event Action<string> OnAnimalDetected;
-
-    // 3. Báo tin khi AR target bị mất (camera không còn nhìn thấy thẻ)
-    public event Action OnARObjectLost;
-
-    // Property để các script khác có thể lấy tên con vật hiện tại bất cứ lúc nào
-    public string CurrentAnimalID => _currentAnimalID;
-
-    private void Awake()
-    {
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
-    }
-
-    private void Start()
-    {
-        // Mặc định vào game là ở màn hình Home
-        ChangeState(AppState.Home);
-    }
-
-    // --- CORE LOGIC: QUẢN LÝ TRẠNG THÁI ---
-
-    public void ChangeState(AppState newState)
-    {
-        _currentState = newState;
-        Debug.Log($"[GameManager] State Changed to: {newState}");
-
-        // Bắn tín hiệu cho UIManager biết để bật/tắt Canvas
-        OnStateChanged?.Invoke(newState);
-    }
-
-    // --- CORE LOGIC: GIAO TIẾP VỚI AR (VUFORIA) ---
-
-    // Hàm này được gọi từ script ARContentTrigger
-    public void OnARObjectDetected(string animalID)
-    {
-        // 1. Lưu lại ID (VD: "Cow", "Fox")
-        _currentAnimalID = animalID;
-
-        // 2. Chuyển State sang chế độ tương tác
-        ChangeState(AppState.ARObjectFound);
-
-        // 3. Bắn event kèm dữ liệu để UI cập nhật text/âm thanh
-        Debug.Log($"[GameManager] Detected: {animalID}. Notify UI to update data.");
-        OnAnimalDetected?.Invoke(animalID);
-    }
-
-    // Hàm này được gọi từ script ARContentTrigger khi mất target
-    public void NotifyARObjectLost()
-    {
-        // Khi mất dấu thẻ, quay về trạng thái Scanning
-        Debug.Log("[GameManager] Target Lost. Resetting to Scan mode.");
-
-        _currentAnimalID = null; // Xóa dữ liệu cũ
-        ChangeState(AppState.ARScanning);
-
-        // Bắn event để UI biết
-        OnARObjectLost?.Invoke();
-    }
-
-    // --- HÀM ĐIỀU KHIỂN LUỒNG (Flow Control) ---
-
-    public void StartARScan()
-    {
-        // Được gọi khi bấm nút "Start" ở Home Screen
-        Debug.Log("[GameManager] Starting AR Session...");
-        ChangeState(AppState.ARScanning);
-
-        // LƯU Ý: Đã xóa đoạn Invoke Mockup. 
-        // Giờ đây game sẽ đợi tín hiệu thật từ Camera/ARContentTrigger.
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\QuizData.cs
-// ==========================================
-
-using UnityEngine;
-
-/// <summary>
-/// Quiz Data ScriptableObject - stores quiz questions
-/// </summary>
-[CreateAssetMenu(fileName = "QuizData", menuName = "AR Lingo/Quiz Data")]
-public class QuizData : ScriptableObject
-{
-    public QuizQuestion[] questions;
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\WordData.cs
-// ==========================================
-
-using UnityEngine;
-
-// Menu giúp click chuột phải tạo file nhanh: Create -> AR Lingo -> Word Data
-[CreateAssetMenu(fileName = "NewWordData", menuName = "AR Lingo/Word Data")]
-public class WordData : ScriptableObject
-{
-    [Header("Identity")]
-    public string id;              // ID duy nhất (vd: "animal_lion")
-
-    [Header("Category")]
-    public WordCategory category;  // NEW: Loại từ (Animal, Plant, Object...)
-
-    [Header("Content")]
-    public string englishName;     // Vd: Lion
-    public string vietnameseName;  // Vd: Sư tử
-    public string pronunciation;   // NEW: Phiên âm (vd: "/ˈlaɪən/")
-    [TextArea]
-    public string description;     // Mô tả ngắn
-    [TextArea]
-    public string vietnameseDescription; // NEW: Mô tả tiếng Việt
-
-    [Header("Assets")]
-    public GameObject modelPrefab; // Prefab 3D con vật (có Animator)
-    public Sprite icon2D;          // Ảnh đại diện cho Dictionary
-    public AudioClip audioPronounce; // File âm thanh đọc tên (Anh/Việt)
-    public AudioClip audioSFX;       // Tiếng kêu con vật (Gầm, sủa...)
-
-    [Header("Animation Settings (Only for Animals)")]
-    public bool hasAnimations;     // NEW: Check if this has animations (auto-set based on category)
-    public string walkAnimationName = "Walk"; // NEW: Tên animation Walk
-    public string attackAnimationName = "Attack"; // NEW: Tên animation Attack
-
-    // Helper: Lấy tên theo ngôn ngữ đang chọn (Sprint sau sẽ cần)
-    public string GetName(bool isEnglish)
-    {
-        return isEnglish ? englishName : vietnameseName;
-    }
-
-    // Helper: Check if this word supports animations (only animals)
-    public bool SupportsAnimations()
-    {
-        return category == WordCategory.Animal && hasAnimations;
-    }
-
-    // Validate on editor changes
-    private void OnValidate()
-    {
-        // Auto-set hasAnimations based on category
-        hasAnimations = (category == WordCategory.Animal);
-    }
-}
-
-// NEW: Enum for word categories
-public enum WordCategory
-{
-    Animal,    // Con vật - có animation
-    Plant,     // Thực vật - không có animation
-    Object,    // Đồ vật - không có animation
-    Food       // Đồ ăn - không có animation
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\WordDatabase.cs
-// ==========================================
-
-using System.Collections.Generic;
-using UnityEngine;
-using System.Linq; // Dùng LINQ để tìm kiếm nhanh
-
-[CreateAssetMenu(fileName = "WordDatabase", menuName = "AR Lingo/Database")]
-public class WordDatabase : ScriptableObject
-{
-    [SerializeField] private List<WordData> allWords;
-
-    // Hàm tìm kiếm con vật dựa trên ID (Dùng khi AR Camera scan được target)
-    public WordData GetWordByID(string searchID)
-    {
-        // Tìm trong list xem có con nào trùng ID không
-        return allWords.FirstOrDefault(w => w.id == searchID);
-    }
-
-    // Hàm lấy danh sách ngẫu nhiên để làm Quiz (Sprint sau)
-    public List<WordData> GetRandomWords(int count)
-    {
-        // Shuffle và lấy count phần tử (Logic giả định, cần viết kỹ hơn sau này)
-        return allWords.OrderBy(x => Random.value).Take(count).ToList();
-    }
-
-    // Hàm lấy tất cả các từ (Dùng cho Dictionary List View)
-    public List<WordData> GetAllWords()
-    {
-        return allWords != null ? new List<WordData>(allWords) : new List<WordData>();
-    }
-
-    // Hàm tìm kiếm từ theo tên (English hoặc Vietnamese)
-    public List<WordData> SearchWords(string searchText)
-    {
-        if (string.IsNullOrEmpty(searchText) || allWords == null)
-            return GetAllWords();
-
-        searchText = searchText.ToLower();
-        return allWords.Where(w => 
-            w.englishName.ToLower().Contains(searchText) ||
-            w.vietnameseName.ToLower().Contains(searchText)
-        ).ToList();
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Controllers\ARVisualController.cs
-// ==========================================
-
-using UnityEngine;
-using System.Collections;
-using TMPro;
-
-public class ARVisualController : MonoBehaviour
-{
-    [Header("Animation Settings")]
-    [Tooltip("Thời gian để con vật hiện ra hoàn toàn")]
-    [SerializeField] private float spawnDuration = 0.5f;
-    [Tooltip("Đường cong chuyển động (Nên chọn kiểu ElasticOut)")]
-    [SerializeField] private AnimationCurve spawnCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
-
-    [Header("UI Components")]
-    [Tooltip("Kéo cái World Space Canvas trên đầu con vật vào đây")]
-    [SerializeField] private Canvas infoCanvas;
-
-    private Vector3 _originalScale;
-    private Camera _mainCamera;
-
-    private void Awake()
-    {
-        _mainCamera = Camera.main;
-        _originalScale = transform.localScale; // Lưu lại kích thước chuẩn (ví dụ 1,1,1)
-    }
-
-    private void OnEnable()
-    {
-        // 1. Reset về bé tí hon
-        transform.localScale = Vector3.zero;
-
-        // 2. Bắt đầu hiệu ứng phình to ra
-        StartCoroutine(SpawnAnimation());
-
-        // 3. Nếu có UI, bật nó lên
-        if (infoCanvas != null) infoCanvas.gameObject.SetActive(true);
-    }
-
-    private void LateUpdate()
-    {
-        // Giữ cho bảng tên luôn quay mặt về phía Camera
-        if (infoCanvas != null && _mainCamera != null)
-        {
-            // Kỹ thuật Billboard: Chỉ xoay trục Y để chữ không bị nghiêng ngả
-            infoCanvas.transform.LookAt(infoCanvas.transform.position + _mainCamera.transform.rotation * Vector3.forward,
-            _mainCamera.transform.rotation * Vector3.up);
-        }
-    }
-
-    private IEnumerator SpawnAnimation()
-    {
-        float timer = 0f;
-        while (timer < spawnDuration)
-        {
-            timer += Time.deltaTime;
-            float progress = timer / spawnDuration;
-
-            // Tính toán scale dựa trên đường cong
-            float curveValue = spawnCurve.Evaluate(progress);
-            transform.localScale = _originalScale * curveValue;
-
-            yield return null;
-        }
-        transform.localScale = _originalScale; // Chốt hạ kích thước chuẩn
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Controllers\SimpleMenuController.cs
-// ==========================================
-
-using UnityEngine;
-using UnityEngine.UI;
-
-public class SimpleMenuController : MonoBehaviour
-{
-    [Header("Kéo các Panel vào đây")]
-    public GameObject homePanel;
-    public GameObject scanPanel;
-    public GameObject dictionaryPanel;
-    public GameObject quizPanel;
-    public GameObject settingPanel;
-
-    // --- HÀM CHO CÁC NÚT Ở MÀN HÌNH HOME ---
-
-    public void OpenScan()
-    {
-        homePanel.SetActive(false); // Tắt Home
-        scanPanel.SetActive(true);  // Bật Scan
-    }
-
-    public void OpenDictionary()
-    {
-        homePanel.SetActive(false);
-        dictionaryPanel.SetActive(true);
-    }
-
-    public void OpenQuiz()
-    {
-        homePanel.SetActive(false);
-        quizPanel.SetActive(true);
-    }
-
-    public void OpenSetting()
-    {
-        homePanel.SetActive(false);
-        settingPanel.SetActive(true);
-    }
-
-    /// <summary>
-    /// Quit the application
-    /// </summary>
-    public void QuitApp()
-    {
-        Debug.Log("[SimpleMenuController] Quitting application...");
-
-        #if UNITY_EDITOR
-        // Stop playing in Unity Editor
-        UnityEditor.EditorApplication.isPlaying = false;
-        #else
-        // Quit application on device
-        Application.Quit();
-        #endif
-    }
-
-    // --- HÀM CHO NÚT BACK ---
-
-    public void BackToHome()
-    {
-        // Tắt hết tất cả các panel con đi cho chắc ăn
-        scanPanel.SetActive(false);
-        dictionaryPanel.SetActive(false);
-        quizPanel.SetActive(false);
-        settingPanel.SetActive(false);
-
-        // Bật lại Home
-        homePanel.SetActive(true);
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Managers\ARScanFeature.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\AR\ARScanFeature.cs
 // ==========================================
 
 using UnityEngine;
@@ -1192,38 +1188,50 @@ using UnityEngine.UI;
 /// </summary>
 public class ARScanFeature : MonoBehaviour
 {
-    [Header("1. UI Elements")]
+    [Header("1. UI Elements - Bottom Action Buttons")]
     public GameObject viewInfoButton;
-    public GameObject quizButton;
-    public GameObject resetButton;
-    public GameObject scanInstruction;
-    public GameObject scanFrame;
     public GameObject walkButton;
     public GameObject attackButton;
+    public GameObject resetButton;
 
-    [Header("2. Panel References")]
+    [Header("1.2 Top-Right Navigation Buttons")]
+    public GameObject dictionaryButtonAR;
+    public GameObject quizButtonAR;
+
+    [Header("2. UI Instructions")]
+    public GameObject scanInstruction;
+    public GameObject scanFrame;
+
+    [Header("3. Panel References")]
     public GameObject dictionaryPanel;
     public GameObject scanPanel;
+    public GameObject quizPanel;
     public DictionaryUI dictionaryUI;
     public GameObject dictionaryListViewPanel;
     public GameObject dictionaryDetailViewPanel;
     public GameObject dictionaryListViewBackButton;
     public GameObject dictionaryHeader;
-    
-    [Header("3. Data")]
-    public WordDatabase wordDatabase;
-    public GameManager gameManager;
+    public DictionaryListView dictionaryListView;
 
-    [Header("4. AR Detection Settings")]
+    [Header("4. Data")]
+    public WordDatabase wordDatabase;
+    public AppStateManager gameManager;
+
+    [Header("5. AR Detection Settings")]
     public Camera arCamera;
     [SerializeField] private bool autoShowButtonsOnDetection = true;
 
-    [Header("5. Debug")]
+    [Header("6. Debug")]
     [SerializeField] private bool enableDebugLogs = true;
 
     private WordData currentDetectedWord;
     private bool hasDetectedObject = false;
-    private bool isViewingDictionary = false; // NEW: Track if user is viewing dictionary
+    private bool isViewingDictionary = false;
+    
+    // Store reference to current detected model's animator
+    private AnimalAnimationController currentAnimalController;
+
+    private static bool _openedFromARScan = false;
 
     void Start()
     {
@@ -1239,14 +1247,14 @@ public class ARScanFeature : MonoBehaviour
     {
         if (gameManager == null)
         {
-            gameManager = GameManager.Instance;
+            gameManager = AppStateManager.Instance;
         }
 
         if (gameManager != null)
         {
             gameManager.OnAnimalDetected += HandleAnimalDetected;
             gameManager.OnARObjectLost += HandleARObjectLost;
-            
+
             if (enableDebugLogs)
                 Debug.Log("[ARScanFeature] Subscribed to GameManager events");
         }
@@ -1275,11 +1283,14 @@ public class ARScanFeature : MonoBehaviour
         if (wordDatabase != null)
         {
             currentDetectedWord = wordDatabase.GetWordByID(wordID);
-            
+
             if (currentDetectedWord != null)
             {
                 if (enableDebugLogs)
                     Debug.Log($"[ARScanFeature] Word found: {currentDetectedWord.englishName} ({currentDetectedWord.vietnameseName})");
+
+                // Find the AnimalAnimationController on the detected model
+                FindCurrentAnimalController(wordID);
                 
                 ShowDetectedObject();
             }
@@ -1294,35 +1305,69 @@ public class ARScanFeature : MonoBehaviour
         }
     }
 
+    // Find the AnimalAnimationController for the detected animal
+    private void FindCurrentAnimalController(string wordID)
+    {
+        // Search for the 3D model in the scene
+        string modelName = "PF_" + wordID.Replace("animal_", "");
+        
+        // Direct search by name
+        GameObject modelObject = GameObject.Find(modelName);
+        
+        if (modelObject != null)
+        {
+            currentAnimalController = modelObject.GetComponentInChildren<AnimalAnimationController>();
+            
+            if (currentAnimalController != null)
+            {
+                if (enableDebugLogs)
+                    Debug.Log($"[ARScanFeature] Found AnimalAnimationController on: {modelObject.name}");
+                
+                // Set custom animation names from WordData if available
+                if (currentDetectedWord != null && currentDetectedWord.SupportsAnimations())
+                {
+                    currentAnimalController.SetAnimationNames(
+                        currentDetectedWord.walkAnimationName,
+                        currentDetectedWord.attackAnimationName
+                    );
+                }
+                return;
+            }
+        }
+
+        if (enableDebugLogs)
+            Debug.LogWarning($"[ARScanFeature] AnimalAnimationController not found for: {modelName}");
+    }
+
     private void HandleARObjectLost()
     {
         if (enableDebugLogs)
             Debug.Log("[ARScanFeature] AR Target lost");
-        
-        // NEW: Don't reset if user is viewing dictionary detail
+
         if (isViewingDictionary)
         {
             if (enableDebugLogs)
                 Debug.Log("[ARScanFeature] User is viewing dictionary - keeping UI as is");
-            
-            // Just hide the buttons, keep dictionary open
+
             if (viewInfoButton != null) viewInfoButton.SetActive(false);
-            if (quizButton != null) quizButton.SetActive(false);
             if (walkButton != null) walkButton.SetActive(false);
             if (attackButton != null) attackButton.SetActive(false);
             
+            if (dictionaryButtonAR != null) dictionaryButtonAR.SetActive(false);
+            if (quizButtonAR != null) quizButtonAR.SetActive(false);
+
             hasDetectedObject = false;
+            currentAnimalController = null; // Clear reference
             return;
         }
-        
-        // Normal reset for scan panel
+
         ResetScanState();
     }
 
     private void ShowDetectedObject()
     {
         hasDetectedObject = true;
-        isViewingDictionary = false; // Reset dictionary flag
+        isViewingDictionary = false;
 
         if (scanInstruction != null) scanInstruction.SetActive(false);
         if (scanFrame != null) scanFrame.SetActive(false);
@@ -1335,10 +1380,12 @@ public class ARScanFeature : MonoBehaviour
         else
         {
             if (viewInfoButton != null) viewInfoButton.SetActive(false);
-            if (quizButton != null) quizButton.SetActive(false);
             if (walkButton != null) walkButton.SetActive(false);
             if (attackButton != null) attackButton.SetActive(false);
             
+            if (dictionaryButtonAR != null) dictionaryButtonAR.SetActive(false);
+            if (quizButtonAR != null) quizButtonAR.SetActive(false);
+
             if (enableDebugLogs)
                 Debug.Log("[ARScanFeature] Waiting for tap on model to show buttons...");
         }
@@ -1346,88 +1393,125 @@ public class ARScanFeature : MonoBehaviour
 
     void Update()
     {
-        if (!hasDetectedObject || isViewingDictionary) return; // Don't detect clicks when viewing dictionary
+        if (!hasDetectedObject || isViewingDictionary) return;
 
-        bool inputDetected = false;
-        Vector3 inputPosition = Vector3.zero;
+        if (!TryGetInputPosition(out var inputPosition)) return;
 
-        if (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)
+        if (arCamera == null)
         {
-            inputDetected = true;
-            inputPosition = Input.GetTouch(0).position;
-            
-            if (enableDebugLogs)
-                Debug.Log($"[ARScanFeature] Touch detected at: {inputPosition}");
-        }
-        else if (Input.GetMouseButtonDown(0))
-        {
-            inputDetected = true;
-            inputPosition = Input.mousePosition;
-            
-            if (enableDebugLogs)
-                Debug.Log($"[ARScanFeature] Mouse click detected at: {inputPosition}");
+            Debug.LogWarning("[ARScanFeature] AR Camera not assigned!");
+            ShowActionButtons();
+            return;
         }
 
-        if (inputDetected)
+        var ray = arCamera.ScreenPointToRay(inputPosition);
+        LogDebug($"[ARScanFeature] Raycasting from {ray.origin} in direction {ray.direction}");
+
+        if (Physics.Raycast(ray, out var hit, 100f))
         {
-            if (arCamera != null)
+            LogDebug($"[ARScanFeature] ✓ Hit object: {hit.collider.gameObject.name}");
+            if (IsARTarget(hit.collider.transform))
             {
-                Ray ray = arCamera.ScreenPointToRay(inputPosition);
-                RaycastHit hit;
-                
-                if (enableDebugLogs)
-                    Debug.Log($"[ARScanFeature] Raycasting from {ray.origin} in direction {ray.direction}");
-                
-                if (Physics.Raycast(ray, out hit, 100f))
-                {
-                    if (enableDebugLogs)
-                        Debug.Log($"[ARScanFeature] ✓ Hit object: {hit.collider.gameObject.name}");
-                    
-                    if (hit.collider.gameObject.name.StartsWith("PF_") || 
-                        hit.collider.transform.root.name.StartsWith("ImageTarget"))
-                    {
-                        ShowActionButtons();
-                    }
-                }
-                else
-                {
-                    if (enableDebugLogs)
-                        Debug.Log("[ARScanFeature] Raycast hit nothing - showing buttons anyway (fallback)");
-                    
-                    ShowActionButtons();
-                }
-            }
-            else
-            {
-                Debug.LogWarning("[ARScanFeature] AR Camera not assigned!");
                 ShowActionButtons();
             }
         }
+        else
+        {
+            LogDebug("[ARScanFeature] Raycast hit nothing - showing buttons anyway (fallback)");
+            ShowActionButtons();
+        }
+    }
+
+    private bool TryGetInputPosition(out Vector3 inputPosition)
+    {
+        inputPosition = Vector3.zero;
+
+        if (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)
+        {
+            inputPosition = Input.GetTouch(0).position;
+            LogDebug($"[ARScanFeature] Touch detected at: {inputPosition}");
+            return true;
+        }
+
+        if (Input.GetMouseButtonDown(0))
+        {
+            inputPosition = Input.mousePosition;
+            LogDebug($"[ARScanFeature] Mouse click detected at: {inputPosition}");
+            return true;
+        }
+
+        return false;
+    }
+
+    private void LogDebug(string message)
+    {
+        if (enableDebugLogs) Debug.Log(message);
+    }
+
+    private static bool IsARTarget(Transform t)
+    {
+        return t.gameObject.name.StartsWith("PF_") || t.root.name.StartsWith("ImageTarget");
     }
 
     private void ShowActionButtons()
     {
         if (enableDebugLogs)
             Debug.Log("[ARScanFeature] Showing action buttons");
-        
+
         if (viewInfoButton != null) viewInfoButton.SetActive(true);
-        if (walkButton != null) walkButton.SetActive(true);
-        if (attackButton != null) attackButton.SetActive(true);
         
-        if (quizButton != null) quizButton.SetActive(false);
+        // Only show Walk/Attack buttons if the animal supports animations
+        bool hasAnimations = currentDetectedWord != null && currentDetectedWord.SupportsAnimations();
+        
+        if (walkButton != null) 
+            walkButton.SetActive(hasAnimations);
+        
+        if (attackButton != null) 
+            attackButton.SetActive(hasAnimations);
+
+        if (dictionaryButtonAR != null) dictionaryButtonAR.SetActive(true);
+        if (quizButtonAR != null) quizButtonAR.SetActive(true);
     }
 
+    // UPDATED: Walk button now triggers animation
     public void OnWalkButtonClicked()
     {
-        Debug.Log("[ARScanFeature] Walk button clicked - Animation will be added later");
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Walk button clicked");
+
+        if (currentAnimalController != null)
+        {
+            currentAnimalController.PlayWalk();
+            
+            if (enableDebugLogs)
+                Debug.Log($"[ARScanFeature] Playing Walk animation on: {currentAnimalController.gameObject.name}");
+        }
+        else
+        {
+            Debug.LogWarning("[ARScanFeature] No AnimalAnimationController found - cannot play Walk animation");
+        }
     }
 
+    // UPDATED: Attack button now triggers animation
     public void OnAttackButtonClicked()
     {
-        Debug.Log("[ARScanFeature] Attack button clicked - Animation will be added later");
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Attack button clicked");
+
+        if (currentAnimalController != null)
+        {
+            currentAnimalController.PlayAttack();
+            
+            if (enableDebugLogs)
+                Debug.Log($"[ARScanFeature] Playing Attack animation on: {currentAnimalController.gameObject.name}");
+        }
+        else
+        {
+            Debug.LogWarning("[ARScanFeature] No AnimalAnimationController found - cannot play Attack animation");
+        }
     }
 
-    public void OnOpenDictionaryClicked()
+    public void OnViewInfoButtonClicked()
     {
         if (currentDetectedWord == null)
         {
@@ -1436,17 +1520,17 @@ public class ARScanFeature : MonoBehaviour
         }
 
         if (enableDebugLogs)
-            Debug.Log($"[ARScanFeature] Opening dictionary for: {currentDetectedWord.englishName}");
+            Debug.Log($"[ARScanFeature] Opening dictionary DETAIL for: {currentDetectedWord.englishName}");
 
-        // NEW: Set flag that we're viewing dictionary
         isViewingDictionary = true;
+        _openedFromARScan = true;
 
         if (scanPanel != null) scanPanel.SetActive(false);
         if (dictionaryPanel != null) dictionaryPanel.SetActive(true);
 
-        if (dictionaryDetailViewPanel != null) 
+        if (dictionaryDetailViewPanel != null)
             dictionaryDetailViewPanel.SetActive(true);
-        if (dictionaryListViewPanel != null) 
+        if (dictionaryListViewPanel != null)
             dictionaryListViewPanel.SetActive(false);
 
         if (dictionaryListViewBackButton != null)
@@ -1465,428 +1549,143 @@ public class ARScanFeature : MonoBehaviour
         }
     }
 
+    public void OnDictionaryListButtonClicked()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Opening dictionary LIST view");
+
+        isViewingDictionary = true;
+        _openedFromARScan = true;
+
+        if (scanPanel != null) scanPanel.SetActive(false);
+        if (dictionaryPanel != null) dictionaryPanel.SetActive(true);
+
+        if (dictionaryListViewPanel != null)
+            dictionaryListViewPanel.SetActive(true);
+        if (dictionaryDetailViewPanel != null)
+            dictionaryDetailViewPanel.SetActive(false);
+
+        if (dictionaryListViewBackButton != null)
+            dictionaryListViewBackButton.SetActive(true);
+        if (dictionaryHeader != null)
+            dictionaryHeader.SetActive(true);
+
+        if (dictionaryListView != null)
+        {
+            dictionaryListView.gameObject.SetActive(true);
+            dictionaryListView.ShowListView();
+        }
+        else
+        {
+            Debug.LogWarning("ARScanFeature: DictionaryListView component not found!");
+        }
+    }
+
+    public void OnQuizButtonClicked()
+    {
+        Debug.Log("[ARScanFeature] OnQuizButtonClicked called");
+        
+        _openedFromARScan = true;
+        Debug.Log($"[ARScanFeature] Set _openedFromARScan = {_openedFromARScan}");
+
+        if (scanPanel != null) scanPanel.SetActive(false);
+        if (quizPanel != null) 
+        {
+            quizPanel.SetActive(true);
+            
+            var quizManager = quizPanel.GetComponent<QuizManager>();
+            if (quizManager != null)
+            {
+                quizManager.ResetQuiz();
+            }
+        }
+        else
+        {
+            Debug.LogWarning("ARScanFeature: Quiz panel not assigned!");
+        }
+    }
+
     public void OnResetClicked()
     {
         if (enableDebugLogs)
             Debug.Log("[ARScanFeature] Resetting scan state");
-        
-        // NEW: Reset dictionary flag
+
         isViewingDictionary = false;
-        
+
         ResetScanState();
     }
 
-    // NEW: Call this when user clicks Back button in dictionary
     public void OnBackFromDictionary()
     {
         if (enableDebugLogs)
             Debug.Log("[ARScanFeature] Back from dictionary to scan panel");
-        
-        // Reset dictionary flag
+
         isViewingDictionary = false;
-        
-        // Hide dictionary, show scan panel
+        _openedFromARScan = false;
+
         if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
         if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
-        if (scanPanel != null) scanPanel.SetActive(true);
+        if (dictionaryListViewPanel != null) dictionaryListViewPanel.SetActive(false);
         
-        // Reset to clean scan state
+        if (scanPanel != null) scanPanel.SetActive(true);
+
         ResetScanState();
+    }
+
+    public void OnBackFromQuiz()
+    {
+        if (enableDebugLogs)
+            Debug.Log("[ARScanFeature] Back from quiz to scan panel");
+
+        _openedFromARScan = false;
+
+        if (quizPanel != null) quizPanel.SetActive(false);
+        if (scanPanel != null) scanPanel.SetActive(true);
+
+        ResetScanState();
+    }
+
+    public static bool IsOpenedFromARScan()
+    {
+        Debug.Log($"[ARScanFeature] IsOpenedFromARScan called - returning: {_openedFromARScan}");
+        return _openedFromARScan;
+    }
+
+    public static void ClearARScanFlag()
+    {
+        _openedFromARScan = false;
+        Debug.Log("[ARScanFeature] ClearARScanFlag called - set to FALSE");
     }
 
     private void ResetScanState()
     {
         hasDetectedObject = false;
         currentDetectedWord = null;
-        isViewingDictionary = false; // Make sure flag is reset
+        isViewingDictionary = false;
+        currentAnimalController = null; // Clear controller reference
 
         if (scanInstruction != null) scanInstruction.SetActive(true);
         if (scanFrame != null) scanFrame.SetActive(true);
 
         if (viewInfoButton != null) viewInfoButton.SetActive(false);
-        if (quizButton != null) quizButton.SetActive(false);
-        if (resetButton != null) resetButton.SetActive(false);
         if (walkButton != null) walkButton.SetActive(false);
         if (attackButton != null) attackButton.SetActive(false);
+        if (resetButton != null) resetButton.SetActive(false);
 
-        // Only hide dictionary panels if not currently viewing
+        if (dictionaryButtonAR != null) dictionaryButtonAR.SetActive(false);
+        if (quizButtonAR != null) quizButtonAR.SetActive(false);
+
         if (!isViewingDictionary)
         {
             if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
             if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
+            if (dictionaryListViewPanel != null) dictionaryListViewPanel.SetActive(false);
         }
     }
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Managers\AudioManager.cs
-// ==========================================
-
-using UnityEngine;
-using UnityEngine.Audio; // Bắt buộc để dùng Mixer
-
-public class AudioManager : MonoBehaviour
-{
-    // Singleton: Đảm bảo chỉ có 1 AudioManager tồn tại
-    public static AudioManager Instance;
-
-    [Header("Components")]
-    [Tooltip("Kéo file MainMixer vào đây")]
-    public AudioMixer mainMixer;
-
-    // THÊM MỚI: 2 Nguồn phát riêng biệt
-    [Header("Audio Sources")]
-    [Tooltip("Kéo AudioSource dành cho SFX vào đây")]
-    public AudioSource sfxSource;
-
-    [Tooltip("Kéo AudioSource dành cho Voice/Pronunciation vào đây")]
-    public AudioSource voiceSource;
-
-    [Header("Settings Keys")]
-    // Tên tham số bạn đã đặt trong bước Expose Parameter
-    private const string MIXER_SFX = "SFXVol";
-    private const string MIXER_VOICE = "VoiceVol";
-
-    private void Awake()
-    {
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject); // Giữ cho nó sống khi chuyển cảnh
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-    }
-
-    private void Start()
-    {
-        // Tải setting cũ khi bật game. Mặc định là 1 (Max volume)
-        float savedSFX = PlayerPrefs.GetFloat("Settings_SFX", 1f);
-        float savedVoice = PlayerPrefs.GetFloat("Settings_Voice", 1f);
-
-        SetSFXLevel(savedSFX);
-        SetVoiceLevel(savedVoice);
-    }
-
-    // --- HÀM CHO UI GỌI VÀO ---
-
-    // Slider UI sẽ truyền giá trị từ 0 đến 1 vào đây
-    public void SetSFXLevel(float sliderValue)
-    {
-        mainMixer.SetFloat(MIXER_SFX, LogarithmicDb(sliderValue));
-        PlayerPrefs.SetFloat("Settings_SFX", sliderValue); // Lưu lại
-        PlayerPrefs.Save();
-    }
-
-    public void SetVoiceLevel(float sliderValue)
-    {
-        mainMixer.SetFloat(MIXER_VOICE, LogarithmicDb(sliderValue));
-        PlayerPrefs.SetFloat("Settings_Voice", sliderValue); // Lưu lại
-        PlayerPrefs.Save();
-    }
-
-    // --- THÊM MỚI: HÀM PHÁT ÂM THANH ---
-
-    public void PlaySFX(AudioClip clip, bool interrupt = false)
-    {
-        if (clip == null || sfxSource == null) return;
-
-        // Nếu yêu cầu ngắt (interrupt = true), dừng tiếng đang kêu
-        if (interrupt)
-        {
-            sfxSource.Stop();
-        }
-
-        // Phát tiếng mới
-        sfxSource.PlayOneShot(clip);
-    }
-
-    public void PlayVoice(AudioClip clip)
-    {
-        if (clip != null && voiceSource != null)
-        {
-            // Với giọng đọc, ta nên dừng câu cũ trước khi đọc câu mới (tùy chọn)
-            voiceSource.Stop();
-            voiceSource.PlayOneShot(clip);
-        }
-    }
-
-    // --- CÔNG THỨC TOÁN HỌC ---
-    // Chuyển đổi 0-1 (Slider) thành -80dB đến 0dB (Mixer)
-    private float LogarithmicDb(float linear)
-    {
-        linear = Mathf.Clamp(linear, 0.0001f, 1f); // Tránh log(0) gây lỗi
-        return Mathf.Log10(linear) * 20;
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Managers\MockScanFeature.cs
-// ==========================================
-
-using UnityEngine;
-using UnityEngine.UI;
-using TMPro;
-
-public class MockScanFeature : MonoBehaviour
-{
-    [Header("1. Các vật thể")]
-    public GameObject model3D;          // Kéo Mock_Apple vào đây
-    public GameObject viewInfoButton;   // Kéo Btn_ViewInfo vào đây (Dictionary)
-    public GameObject quizButton;       // (Tuỳ chọn) Kéo Btn_Quiz vào đây
-    public GameObject resetButton;      // Kéo Btn_Reset / Rescan vào đây
-    public GameObject stimulateButton;  // Kéo Btn_Stimulate / Scan vào đây
-    public GameObject scanInstruction;  // Kéo cái Bottom_Panel (hướng dẫn quét) vào đây
-    public GameObject scanFrame;        // Kéo Scan Frame (khung quét) vào đây
-
-    [Header("2. Kết nối UI")]
-    public GameObject dictionaryPanel; // Kéo Panel_Dictionary vào đây
-    public GameObject scanPanel;       // Kéo Panel_Scan vào đây
-    public DictionaryUI dictionaryUI;   // Reference to DictionaryUI component
-    public GameObject dictionaryListViewPanel;  // Panel list (nếu dùng chế độ 2 panel)
-    public GameObject dictionaryDetailViewPanel; // Panel detail (nếu tách riêng)
-    public GameObject dictionaryListViewBackButton; // Button_Back in Panel_ListView (to hide when opening from AR)
-    public GameObject dictionaryHeader;       // Header in Dictionary panel (to hide when opening from AR)
-    
-    [Header("3. Word Database")]
-    public WordDatabase wordDatabase;  // Kéo WordDatabase asset vào đây
-    public string detectedWordID = "animal_cow"; // ID của từ được phát hiện (sẽ được set khi AR scan)
-    
-    [Header("4. Legacy - Dữ liệu mẫu (Fallback nếu không dùng WordData)")]
-    public string objectName = "Quả Táo Đỏ";
-    [TextArea] public string objectDescription = "Đây là quả táo đỏ tươi, rất ngon và giàu vitamin.";
-
-    [Header("5. Mock Scan Settings")]
-    public float fakeScanDelay = 2.0f;   // Thời gian chờ giả lập (2-3s)
-    public GameObject scanFX;           // (Tuỳ chọn) Hiệu ứng particle / khung quét
-
-    private WordData currentDetectedWord; // Word data của vật thể đang được phát hiện
-    private bool isScanning = false;
-
-    // --- HÀM 1: Gắn vào nút SIMULATE / SCAN ---
-    public void OnSimulateClicked()
-    {
-        if (isScanning) return; // Đang quét rồi thì bỏ qua
-        StartCoroutine(MockScanRoutine());
-    }
-
-    // --- HÀM 2: Gắn vào nút VIEW INFO (Xem từ điển) ---
-    public void OnOpenDictionaryClicked()
-    {
-        // 1. Chuyển màn hình
-        scanPanel.SetActive(false);
-        dictionaryPanel.SetActive(true);
-
-        // Bật panel Detail, tắt panel List nếu có cấu hình
-        if (dictionaryDetailViewPanel != null) 
-            dictionaryDetailViewPanel.SetActive(true);
-        if (dictionaryListViewPanel != null) 
-            dictionaryListViewPanel.SetActive(false);
-
-        // Hide the ListView's back button when opening from AR scan
-        if (dictionaryListViewBackButton != null)
-            dictionaryListViewBackButton.SetActive(false);
-
-        // Hide the header when opening from AR scan
-        if (dictionaryHeader != null)
-            dictionaryHeader.SetActive(false);
-
-        // 2. Điền dữ liệu vào Dictionary
-        if (dictionaryUI != null)
-        {
-            dictionaryUI.gameObject.SetActive(true); // Đảm bảo panel detail hiện
-            if (currentDetectedWord != null)
-            {
-                dictionaryUI.DisplayWord(currentDetectedWord, fromARView: true);
-            }
-            else
-            {
-                // Fallback: dùng dữ liệu legacy (objectName/objectDescription) nếu chưa có WordData
-                var temp = ScriptableObject.CreateInstance<WordData>();
-                temp.englishName = string.IsNullOrEmpty(objectName) ? "Unknown" : objectName;
-                temp.vietnameseName = string.IsNullOrEmpty(objectName) ? "Không rõ" : objectName;
-                temp.description = objectDescription;
-                dictionaryUI.DisplayWord(temp, fromARView: true);
-                Debug.LogWarning("Dictionary opened with legacy data (no WordData set).");
-            }
-        }
-        else
-        {
-            Debug.LogWarning("DictionaryUI component not found! Make sure to assign it in the inspector.");
-        }
-        
-        // DON'T reset scan state here - only reset when actually going back
-    }
-
-    /// <summary>
-    /// Set the detected word when AR camera detects a card
-    /// This should be called by your Vuforia AR detection system
-    /// </summary>
-    public void SetDetectedWord(string wordID)
-    {
-        detectedWordID = wordID;
-        if (wordDatabase != null)
-        {
-            currentDetectedWord = wordDatabase.GetWordByID(wordID);
-            if (currentDetectedWord != null)
-            {
-                Debug.Log($"Word detected: {currentDetectedWord.englishName} ({currentDetectedWord.vietnameseName})");
-            }
-        }
-    }
-
-    // --- HÀM 4: Gắn vào nút RESET / RESCAN ---
-    public void OnResetClicked()
-    {
-        ResetScanState();
-    }
-
-    /// <summary>
-    /// Đưa màn Scan về trạng thái ban đầu (chưa quét gì)
-    /// </summary>
-    private void ResetScanState()
-    {
-        isScanning = false;
-        currentDetectedWord = null;
-
-        // Hiện panel hướng dẫn và scan frame
-        if (scanInstruction != null) scanInstruction.SetActive(true);
-        if (scanFrame != null) scanFrame.SetActive(true);
-
-        // Ẩn model 3D và các nút
-        if (model3D != null) model3D.SetActive(false);
-        if (viewInfoButton != null) viewInfoButton.SetActive(false);
-        if (quizButton != null) quizButton.SetActive(false);
-        
-        // Reset button should be HIDDEN in initial state (only show when object is detected)
-        if (resetButton != null) resetButton.SetActive(false);
-        
-        // Stimulate button should be VISIBLE in initial state
-        if (stimulateButton != null) stimulateButton.SetActive(true);
-
-        // Tắt hiệu ứng scan
-        if (scanFX != null) scanFX.SetActive(false);
-        
-        // Also hide dictionary panels when resetting
-        if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
-        if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
-    }
-
-    /// <summary>
-    /// Coroutine giả lập quá trình quét: hiện FX + chờ 2-3s rồi mới thấy model 3D
-    /// </summary>
-    private System.Collections.IEnumerator MockScanRoutine()
-    {
-        isScanning = true;
-
-        // Bật hướng dẫn + hiệu ứng quét + scan frame
-        if (scanInstruction != null) scanInstruction.SetActive(true);
-        if (scanFX != null) scanFX.SetActive(true);
-        if (scanFrame != null) scanFrame.SetActive(true); // Show scan frame during scanning
-        if (stimulateButton != null) stimulateButton.SetActive(false); // Ẩn nút Scan khi đang quét
-        if (resetButton != null) resetButton.SetActive(false); // Ẩn nút Reset khi đang quét
-
-        // Ẩn model & các nút trong lúc đang quét
-        if (model3D != null) model3D.SetActive(false);
-        if (viewInfoButton != null) viewInfoButton.SetActive(false);
-        if (quizButton != null) quizButton.SetActive(false);
-
-        // Chờ thời gian giả lập
-        yield return new WaitForSeconds(fakeScanDelay);
-
-        // Giả lập: đã nhận diện xong object
-        if (scanInstruction != null) scanInstruction.SetActive(false);
-        if (scanFX != null) scanFX.SetActive(false);
-        if (scanFrame != null) scanFrame.SetActive(false); // Hide scan frame when model is detected
-
-        if (model3D != null) model3D.SetActive(true);
-
-        // Lấy dữ liệu từ database
-        if (wordDatabase != null && !string.IsNullOrEmpty(detectedWordID))
-        {
-            currentDetectedWord = wordDatabase.GetWordByID(detectedWordID);
-            if (currentDetectedWord != null)
-            {
-                Debug.Log($"Detected word: {currentDetectedWord.englishName}");
-            }
-        }
-
-        // After detection: Hide Stimulate button, show Reset button
-        if (stimulateButton != null) stimulateButton.SetActive(false);
-        if (resetButton != null) resetButton.SetActive(true);
-
-        // Cho phép bấm Dictionary / Quiz sau khi người dùng chạm vào model (xử lý trong Update)
-        isScanning = false;
-    }
-
-    // --- HÀM 3: Tự động phát hiện click vào vật thể 3D ---
-    void Update()
-    {
-        // Nếu vật thể đang hiện, kiểm tra chuột click
-        if (model3D != null && model3D.activeSelf && Input.GetMouseButtonDown(0))
-        {
-            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            RaycastHit hit;
-
-            if (Physics.Raycast(ray, out hit))
-            {
-                if (hit.collider.gameObject == model3D)
-                {
-                    Debug.Log("Đã bấm vào quả táo!");
-                    if (viewInfoButton != null) viewInfoButton.SetActive(true); // Hiện nút xem thông tin
-                    if (quizButton != null) quizButton.SetActive(true); // Hiện nút quiz (optional)
-                }
-            }
-        }
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\Managers\SceneLoader.cs
-// ==========================================
-
-using UnityEngine;
-using UnityEngine.SceneManagement;
-
-public class SceneLoader : MonoBehaviour
-{
-    public static SceneLoader Instance { get; private set; }
-
-    void Awake()
-    {
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-    }
-
-    public void LoadScene(string sceneName)
-    {
-        SceneManager.LoadScene(sceneName);
-    }
-
-    public void LoadHomeScene() => LoadScene("HomeScene");
-    public void LoadScanScene() => LoadScene("ScanScene");
-    public void LoadARViewScene() => LoadScene("ARViewScene");
-    public void LoadQuizScene() => LoadScene("QuizScene");
-    public void LoadDictionaryScene() => LoadScene("DictionaryScene");
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\ARViewController.cs
-// ==========================================
-
-
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryListView.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\Dictionary\DictionaryListView.cs
 // ==========================================
 
 using System.Collections.Generic;
@@ -1900,13 +1699,13 @@ using TMPro;
 public class DictionaryListView : MonoBehaviour
 {
     [Header("UI References")]
-    [SerializeField] private Transform wordListContainer; // ScrollView Content transform (must have Grid Layout Group)
-    [SerializeField] private GameObject wordItemPrefab;   // Prefab for each word item in the grid
-    [SerializeField] private DictionaryUI dictionaryDetailView; // Reference to detail view
-    [SerializeField] private GameObject listViewPanel;    // Panel showing the grid
-    [SerializeField] private GameObject detailViewPanel;  // Panel showing word details
-    [SerializeField] private GameObject listViewBackButton; // Button_Back in Panel_ListView (to hide in detail view)
-    [SerializeField] private GameObject header; // Header for list view
+    [SerializeField] private Transform wordListContainer;
+    [SerializeField] private GameObject wordItemPrefab;
+    [SerializeField] private DictionaryUI dictionaryDetailView;
+    [SerializeField] private GameObject listViewPanel;
+    [SerializeField] private GameObject detailViewPanel;
+    [SerializeField] private GameObject listViewBackButton;
+    [SerializeField] private GameObject header;
 
     [Header("Database")]
     [SerializeField] private WordDatabase wordDatabase;
@@ -1914,11 +1713,12 @@ public class DictionaryListView : MonoBehaviour
     [Header("Search")]
     [SerializeField] private TMP_InputField searchInputField;
     [SerializeField] private Button searchButton;
+    [SerializeField] private GameObject noResultsMessage; 
 
     [Header("Grid Settings")]
-    [SerializeField] private int columnsPerRow = 2; // Number of columns in the grid (default: 2 columns)
-    [SerializeField] private Vector2 cellSize = new Vector2(180, 220); // Size of each grid cell
-    [SerializeField] private Vector2 spacing = new Vector2(10, 10); // Spacing between grid items
+    [SerializeField] private int columnsPerRow = 2;
+    [SerializeField] private Vector2 cellSize = new Vector2(180, 220);
+    [SerializeField] private Vector2 spacing = new Vector2(10, 10);
     
     [Header("Grid Padding")]
     [SerializeField] private int paddingLeft = 10;
@@ -1927,12 +1727,11 @@ public class DictionaryListView : MonoBehaviour
     [SerializeField] private int paddingBottom = 10;
 
     private List<WordItemUI> currentWordItems = new List<WordItemUI>();
-    private bool isInitialized = false; // Track if we've loaded words already
-    private GridLayoutGroup cachedGridLayout; // Cache the grid layout component
+    private bool isInitialized = false;
+    private GridLayoutGroup cachedGridLayout;
 
     void Awake()
     {
-        // Cache the grid layout component
         if (wordListContainer != null)
         {
             cachedGridLayout = wordListContainer.GetComponent<GridLayoutGroup>();
@@ -1945,17 +1744,14 @@ public class DictionaryListView : MonoBehaviour
 
     void OnEnable()
     {
-        // Show list view first
         ShowListView();
 
-        // Setup search listeners
         if (searchButton != null)
             searchButton.onClick.AddListener(OnSearchClicked);
         
         if (searchInputField != null)
             searchInputField.onValueChanged.AddListener(OnSearchTextChanged);
 
-        // Only load word list once or if list is empty
         if (!isInitialized || currentWordItems.Count == 0)
         {
             LoadWordList();
@@ -1964,7 +1760,6 @@ public class DictionaryListView : MonoBehaviour
 
     void OnDisable()
     {
-        // Remove search listeners
         if (searchButton != null)
             searchButton.onClick.RemoveListener(OnSearchClicked);
         
@@ -1972,9 +1767,6 @@ public class DictionaryListView : MonoBehaviour
             searchInputField.onValueChanged.RemoveListener(OnSearchTextChanged);
     }
 
-    /// <summary>
-    /// Load all words from database and display in grid
-    /// </summary>
     public void LoadWordList()
     {
         if (wordDatabase == null)
@@ -1995,16 +1787,13 @@ public class DictionaryListView : MonoBehaviour
             return;
         }
 
-        // Setup Grid Layout Group ONCE
         if (!isInitialized)
         {
             SetupGridLayout();
         }
 
-        // Clear existing items safely
         ClearWordList();
 
-        // Get all words from database
         List<WordData> allWords = wordDatabase.GetAllWords();
         
         if (allWords == null || allWords.Count == 0)
@@ -2013,7 +1802,6 @@ public class DictionaryListView : MonoBehaviour
             return;
         }
 
-        // Create UI items for each word in the grid
         foreach (WordData wordData in allWords)
         {
             GameObject itemObj = Instantiate(wordItemPrefab, wordListContainer);
@@ -2021,7 +1809,6 @@ public class DictionaryListView : MonoBehaviour
             
             if (wordItem == null)
             {
-                // If prefab doesn't have WordItemUI, add it
                 wordItem = itemObj.AddComponent<WordItemUI>();
             }
             
@@ -2033,9 +1820,6 @@ public class DictionaryListView : MonoBehaviour
         Debug.Log($"DictionaryListView: Loaded {allWords.Count} words in grid");
     }
 
-    /// <summary>
-    /// Setup Grid Layout Group component on the container - ONLY CALLED ONCE
-    /// </summary>
     private void SetupGridLayout()
     {
         if (cachedGridLayout == null)
@@ -2044,61 +1828,43 @@ public class DictionaryListView : MonoBehaviour
             return;
         }
 
-        // Configure grid settings using the inspector values
         cachedGridLayout.cellSize = cellSize;
         cachedGridLayout.spacing = spacing;
-        
-        // Set padding using individual values
         cachedGridLayout.padding = new RectOffset(paddingLeft, paddingRight, paddingTop, paddingBottom);
-        
         cachedGridLayout.startCorner = GridLayoutGroup.Corner.UpperLeft;
         cachedGridLayout.startAxis = GridLayoutGroup.Axis.Horizontal;
         cachedGridLayout.childAlignment = TextAnchor.UpperLeft;
         cachedGridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
         cachedGridLayout.constraintCount = columnsPerRow;
 
-        Debug.Log($"Grid Layout configured: CellSize={cellSize}, Spacing={spacing}, Columns={columnsPerRow}, Padding=({paddingLeft},{paddingRight},{paddingTop},{paddingBottom})");
+        Debug.Log($"Grid Layout configured: CellSize={cellSize}, Spacing={spacing}, Columns={columnsPerRow}");
     }
 
-    /// <summary>
-    /// Show word detail view when a word is clicked
-    /// </summary>
     public void ShowWordDetail(WordData wordData)
     {
         if (dictionaryDetailView != null && wordData != null)
         {
-            // Hide list, show detail
             if (listViewPanel != null)
                 listViewPanel.SetActive(false);
             
             if (detailViewPanel != null)
                 detailViewPanel.SetActive(true);
 
-            // Hide the ListView's back button when showing detail
             if (listViewBackButton != null)
                 listViewBackButton.SetActive(false);
 
-            // Hide header in detail view
             if (header != null)
                 header.SetActive(false);
 
-            // Display word in detail view
             dictionaryDetailView.DisplayWord(wordData, fromARView: false);
         }
     }
 
-    /// <summary>
-    /// Return to list view from detail view
-    /// </summary>
     public void BackToListView()
     {
         ShowListView();
     }
 
-    /// <summary>
-    /// Đảm bảo chỉ hiện panel danh sách, ẩn panel chi tiết.
-    /// Có thể gọi từ SimpleMenuController khi mở Dictionary từ Home.
-    /// </summary>
     public void ShowListView()
     {
         if (listViewPanel != null)
@@ -2107,18 +1873,28 @@ public class DictionaryListView : MonoBehaviour
         if (detailViewPanel != null)
             detailViewPanel.SetActive(false);
 
-        // Show the ListView's back button when returning to list
         if (listViewBackButton != null)
             listViewBackButton.SetActive(true);
 
-        // Show header in list view
         if (header != null)
             header.SetActive(true);
+        
+        if (!ARScanFeature.IsOpenedFromARScan())
+        {
+            Debug.Log("[DictionaryListView] Showing list view from Home");
+        }
     }
 
-    /// <summary>
-    /// Filter words based on search text
-    /// </summary>
+    // Check if currently in detail view
+    public bool IsInDetailView()
+    {
+        if (detailViewPanel != null)
+        {
+            return detailViewPanel.activeSelf;
+        }
+        return false;
+    }
+
     private void OnSearchTextChanged(string searchText)
     {
         FilterWords(searchText);
@@ -2137,35 +1913,47 @@ public class DictionaryListView : MonoBehaviour
         if (string.IsNullOrEmpty(searchText))
         {
             // Show all words
-            foreach (var item in currentWordItems)
+            foreach (var wordItem in currentWordItems)
             {
-                if (item != null && item.gameObject != null)
-                    item.gameObject.SetActive(true);
+                if (wordItem != null)
+                    wordItem.gameObject.SetActive(true);
             }
+            
+            // Hide "no results" message
+            if (noResultsMessage != null)
+                noResultsMessage.SetActive(false);
+            
             return;
         }
 
         searchText = searchText.ToLower();
-        foreach (var item in currentWordItems)
+        int visibleCount = 0;
+
+        foreach (var wordItem in currentWordItems)
         {
-            if (item != null && item.gameObject != null && item.WordData != null)
+            if (wordItem != null && wordItem.WordData != null)
             {
-                bool matches = item.WordData.englishName.ToLower().Contains(searchText) ||
-                              item.WordData.vietnameseName.ToLower().Contains(searchText);
-                item.gameObject.SetActive(matches);
+                bool matches = wordItem.WordData.englishName.ToLower().Contains(searchText) ||
+                            wordItem.WordData.vietnameseName.ToLower().Contains(searchText);
+                
+                wordItem.gameObject.SetActive(matches);
+                
+                if (matches)
+                    visibleCount++;
             }
+        }
+        
+        // show/hide "no results" message
+        if (noResultsMessage != null)
+        {
+            noResultsMessage.SetActive(visibleCount == 0);
         }
     }
 
-    /// <summary>
-    /// Clear word list safely - handles null references
-    /// </summary>
     private void ClearWordList()
     {
-        // Destroy all child objects in the container
         if (wordListContainer != null)
         {
-            // Get all children and destroy them
             foreach (Transform child in wordListContainer)
             {
                 if (child != null && child.gameObject != null)
@@ -2175,21 +1963,16 @@ public class DictionaryListView : MonoBehaviour
             }
         }
 
-        // Clear the list (remove null references too)
         if (currentWordItems != null)
         {
             currentWordItems.Clear();
         }
         else
         {
-            // Initialize list if it was null
             currentWordItems = new List<WordItemUI>();
         }
     }
 
-    /// <summary>
-    /// Force reload the word list
-    /// </summary>
     public void ReloadWordList()
     {
         isInitialized = false;
@@ -2198,250 +1981,7 @@ public class DictionaryListView : MonoBehaviour
 }
 
 // ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryUI.cs
-// ==========================================
-
-using UnityEngine;
-using UnityEngine.UI;
-using TMPro;
-
-/// <summary>
-/// Dictionary UI - Displays word information in detail view
-/// </summary>
-public class DictionaryUI : MonoBehaviour
-{
-    [Header("UI References")]
-    [SerializeField] private TextMeshProUGUI englishNameText;
-    [SerializeField] private TextMeshProUGUI vietnameseNameText;
-    [SerializeField] private TextMeshProUGUI pronunciationText;
-    [SerializeField] private TextMeshProUGUI descriptionText;
-    [SerializeField] private TextMeshProUGUI vietnameseDescriptionText;
-    [SerializeField] private Image iconImage;
-    [SerializeField] private Button playPronunciationButton;
-    [SerializeField] private Button backButton;
-    [SerializeField] private Button homeButton;
-
-    // REMOVED: No longer need local audioSource
-    // [Header("Audio")]
-    // [SerializeField] private AudioSource audioSource;
-
-    [Header("Navigation")]
-    [SerializeField] private GameObject homePanel;
-    [SerializeField] private GameObject scanPanel;
-    [SerializeField] private SimpleMenuController menuController;
-    [SerializeField] private ARScanFeature arScanFeature;
-    [SerializeField] private DictionaryListView listView;
-
-    private WordData currentWordData;
-    private bool cameFromARView = false;
-
-    void Awake()
-    {
-        // REMOVED: No longer create local AudioSource
-        // if (audioSource == null)
-        // {
-        //     audioSource = gameObject.AddComponent<AudioSource>();
-        //     audioSource.playOnAwake = false;
-        // }
-    }
-
-    void OnEnable()
-    {
-        if (playPronunciationButton != null)
-            playPronunciationButton.onClick.AddListener(PlayPronunciation);
-        
-        if (backButton != null)
-            backButton.onClick.AddListener(OnBackClicked);
-        
-        if (homeButton != null)
-            homeButton.onClick.AddListener(OnHomeClicked);
-    }
-
-    void OnDisable()
-    {
-        if (playPronunciationButton != null)
-            playPronunciationButton.onClick.RemoveListener(PlayPronunciation);
-        
-        if (backButton != null)
-            backButton.onClick.RemoveListener(OnBackClicked);
-        
-        if (homeButton != null)
-            homeButton.onClick.RemoveListener(OnHomeClicked);
-    }
-
-    public void DisplayWord(WordData wordData, bool fromARView = false)
-    {
-        if (wordData == null)
-        {
-            Debug.LogWarning("DictionaryUI: WordData is null!");
-            return;
-        }
-
-        currentWordData = wordData;
-        cameFromARView = fromARView;
-
-        if (englishNameText != null)
-            englishNameText.text = wordData.englishName;
-
-        if (vietnameseNameText != null)
-            vietnameseNameText.text = wordData.vietnameseName;
-
-        if (pronunciationText != null)
-        {
-            if (!string.IsNullOrEmpty(wordData.pronunciation))
-            {
-                pronunciationText.text = wordData.pronunciation;
-                pronunciationText.gameObject.SetActive(true);
-            }
-            else
-            {
-                pronunciationText.gameObject.SetActive(false);
-            }
-        }
-
-        if (descriptionText != null)
-            descriptionText.text = wordData.description;
-
-        if (vietnameseDescriptionText != null)
-        {
-            if (!string.IsNullOrEmpty(wordData.vietnameseDescription))
-            {
-                vietnameseDescriptionText.text = wordData.vietnameseDescription;
-                vietnameseDescriptionText.gameObject.SetActive(true);
-            }
-            else
-            {
-                vietnameseDescriptionText.gameObject.SetActive(false);
-            }
-        }
-
-        if (iconImage != null && wordData.icon2D != null)
-        {
-            iconImage.sprite = wordData.icon2D;
-            iconImage.gameObject.SetActive(true);
-        }
-        else if (iconImage != null)
-        {
-            iconImage.gameObject.SetActive(false);
-        }
-
-        if (playPronunciationButton != null)
-        {
-            playPronunciationButton.interactable = (wordData.audioPronounce != null);
-        }
-    }
-
-    // FIXED: Use AudioManager instead of local AudioSource
-    public void PlayPronunciation()
-    {
-        if (currentWordData == null)
-        {
-            Debug.LogWarning("DictionaryUI: No word data to play pronunciation!");
-            return;
-        }
-
-        if (currentWordData.audioPronounce != null)
-        {
-            // Use AudioManager's Voice channel so it respects volume settings
-            if (AudioManager.Instance != null)
-            {
-                AudioManager.Instance.PlayVoice(currentWordData.audioPronounce);
-                Debug.Log($"Playing pronunciation for: {currentWordData.englishName}");
-            }
-            else
-            {
-                Debug.LogError("DictionaryUI: AudioManager not found!");
-            }
-        }
-        else
-        {
-            Debug.LogWarning("DictionaryUI: Pronunciation audio clip is missing!");
-        }
-    }
-
-    public void OnBackClicked()
-    {
-        if (cameFromARView && scanPanel != null)
-        {
-            gameObject.SetActive(false);
-            
-            Transform parentPanel = transform.parent;
-            if (parentPanel != null && parentPanel.gameObject != gameObject)
-            {
-                parentPanel.gameObject.SetActive(false);
-            }
-            
-            scanPanel.SetActive(true);
-            
-            if (arScanFeature != null)
-            {
-                arScanFeature.OnBackFromDictionary();
-            }
-        }
-        else
-        {
-            if (listView != null)
-            {
-                gameObject.SetActive(false);
-                listView.BackToListView();
-            }
-            else
-            {
-                Debug.LogWarning("DictionaryUI: listView reference is not assigned!");
-            }
-        }
-    }
-
-    public void OnHomeClicked()
-    {
-        if (menuController != null)
-        {
-            menuController.BackToHome();
-        }
-        else
-        {
-            Debug.LogWarning("DictionaryUI: menuController reference is not assigned!");
-        }
-    }
-
-    public void ClearDisplay()
-    {
-        currentWordData = null;
-        
-        if (englishNameText != null)
-            englishNameText.text = "";
-        
-        if (vietnameseNameText != null)
-            vietnameseNameText.text = "";
-
-        if (pronunciationText != null)
-        {
-            pronunciationText.text = "";
-            pronunciationText.gameObject.SetActive(false);
-        }
-        
-        if (descriptionText != null)
-            descriptionText.text = "";
-
-        if (vietnameseDescriptionText != null)
-        {
-            vietnameseDescriptionText.text = "";
-            vietnameseDescriptionText.gameObject.SetActive(false);
-        }
-        
-        if (iconImage != null)
-            iconImage.gameObject.SetActive(false);
-    }
-}
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\HomeUI.cs
-// ==========================================
-
-
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\QuizManager.cs
+// FILE PATH: Assets\_AR Lingo\Scripts\Feature\Quiz\QuizManager.cs
 // ==========================================
 
 using UnityEngine;
@@ -2899,13 +2439,571 @@ public class QuizManager : MonoBehaviour
 }
 
 // ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\Test Env\MockScanFeature.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+public class MockScanFeature : MonoBehaviour
+{
+    [Header("1. Các vật thể")]
+    public GameObject model3D;          // Kéo Mock_Apple vào đây
+    public GameObject viewInfoButton;   // Kéo Btn_ViewInfo vào đây (Dictionary)
+    public GameObject quizButton;       // (Tuỳ chọn) Kéo Btn_Quiz vào đây
+    public GameObject resetButton;      // Kéo Btn_Reset / Rescan vào đây
+    public GameObject stimulateButton;  // Kéo Btn_Stimulate / Scan vào đây
+    public GameObject scanInstruction;  // Kéo cái Bottom_Panel (hướng dẫn quét) vào đây
+    public GameObject scanFrame;        // Kéo Scan Frame (khung quét) vào đây
+
+    [Header("2. Kết nối UI")]
+    public GameObject dictionaryPanel; // Kéo Panel_Dictionary vào đây
+    public GameObject scanPanel;       // Kéo Panel_Scan vào đây
+    public DictionaryUI dictionaryUI;   // Reference to DictionaryUI component
+    public GameObject dictionaryListViewPanel;  // Panel list (nếu dùng chế độ 2 panel)
+    public GameObject dictionaryDetailViewPanel; // Panel detail (nếu tách riêng)
+    public GameObject dictionaryListViewBackButton; // Button_Back in Panel_ListView (to hide when opening from AR)
+    public GameObject dictionaryHeader;       // Header in Dictionary panel (to hide when opening from AR)
+    
+    [Header("3. Word Database")]
+    public WordDatabase wordDatabase;  // Kéo WordDatabase asset vào đây
+    public string detectedWordID = "animal_cow"; // ID của từ được phát hiện (sẽ được set khi AR scan)
+    
+    [Header("4. Legacy - Dữ liệu mẫu (Fallback nếu không dùng WordData)")]
+    public string objectName = "Quả Táo Đỏ";
+    [TextArea] public string objectDescription = "Đây là quả táo đỏ tươi, rất ngon và giàu vitamin.";
+
+    [Header("5. Mock Scan Settings")]
+    public float fakeScanDelay = 2.0f;   // Thời gian chờ giả lập (2-3s)
+    public GameObject scanFX;           // (Tuỳ chọn) Hiệu ứng particle / khung quét
+
+    private WordData currentDetectedWord; // Word data của vật thể đang được phát hiện
+    private bool isScanning = false;
+
+    // --- HÀM 1: Gắn vào nút SIMULATE / SCAN ---
+    public void OnSimulateClicked()
+    {
+        if (isScanning) return; // Đang quét rồi thì bỏ qua
+        StartCoroutine(MockScanRoutine());
+    }
+
+    // --- HÀM 2: Gắn vào nút VIEW INFO (Xem từ điển) ---
+    public void OnOpenDictionaryClicked()
+    {
+        // 1. Chuyển màn hình
+        scanPanel.SetActive(false);
+        dictionaryPanel.SetActive(true);
+
+        // Bật panel Detail, tắt panel List nếu có cấu hình
+        if (dictionaryDetailViewPanel != null) 
+            dictionaryDetailViewPanel.SetActive(true);
+        if (dictionaryListViewPanel != null) 
+            dictionaryListViewPanel.SetActive(false);
+
+        // Hide the ListView's back button when opening from AR scan
+        if (dictionaryListViewBackButton != null)
+            dictionaryListViewBackButton.SetActive(false);
+
+        // Hide the header when opening from AR scan
+        if (dictionaryHeader != null)
+            dictionaryHeader.SetActive(false);
+
+        // 2. Điền dữ liệu vào Dictionary
+        if (dictionaryUI != null)
+        {
+            dictionaryUI.gameObject.SetActive(true); // Đảm bảo panel detail hiện
+            if (currentDetectedWord != null)
+            {
+                dictionaryUI.DisplayWord(currentDetectedWord, fromARView: true);
+            }
+            else
+            {
+                // Fallback: dùng dữ liệu legacy (objectName/objectDescription) nếu chưa có WordData
+                var temp = ScriptableObject.CreateInstance<WordData>();
+                temp.englishName = string.IsNullOrEmpty(objectName) ? "Unknown" : objectName;
+                temp.vietnameseName = string.IsNullOrEmpty(objectName) ? "Không rõ" : objectName;
+                temp.description = objectDescription;
+                dictionaryUI.DisplayWord(temp, fromARView: true);
+                Debug.LogWarning("Dictionary opened with legacy data (no WordData set).");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("DictionaryUI component not found! Make sure to assign it in the inspector.");
+        }
+        
+        // DON'T reset scan state here - only reset when actually going back
+    }
+
+    /// <summary>
+    /// Set the detected word when AR camera detects a card
+    /// This should be called by your Vuforia AR detection system
+    /// </summary>
+    public void SetDetectedWord(string wordID)
+    {
+        detectedWordID = wordID;
+        if (wordDatabase != null)
+        {
+            currentDetectedWord = wordDatabase.GetWordByID(wordID);
+            if (currentDetectedWord != null)
+            {
+                Debug.Log($"Word detected: {currentDetectedWord.englishName} ({currentDetectedWord.vietnameseName})");
+            }
+        }
+    }
+
+    // --- HÀM 4: Gắn vào nút RESET / RESCAN ---
+    public void OnResetClicked()
+    {
+        ResetScanState();
+    }
+
+    /// <summary>
+    /// Đưa màn Scan về trạng thái ban đầu (chưa quét gì)
+    /// </summary>
+    private void ResetScanState()
+    {
+        isScanning = false;
+        currentDetectedWord = null;
+
+        // Hiện panel hướng dẫn và scan frame
+        if (scanInstruction != null) scanInstruction.SetActive(true);
+        if (scanFrame != null) scanFrame.SetActive(true);
+
+        // Ẩn model 3D và các nút
+        if (model3D != null) model3D.SetActive(false);
+        if (viewInfoButton != null) viewInfoButton.SetActive(false);
+        if (quizButton != null) quizButton.SetActive(false);
+        
+        // Reset button should be HIDDEN in initial state (only show when object is detected)
+        if (resetButton != null) resetButton.SetActive(false);
+        
+        // Stimulate button should be VISIBLE in initial state
+        if (stimulateButton != null) stimulateButton.SetActive(true);
+
+        // Tắt hiệu ứng scan
+        if (scanFX != null) scanFX.SetActive(false);
+        
+        // Also hide dictionary panels when resetting
+        if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+        if (dictionaryDetailViewPanel != null) dictionaryDetailViewPanel.SetActive(false);
+    }
+
+    /// <summary>
+    /// Coroutine giả lập quá trình quét: hiện FX + chờ 2-3s rồi mới thấy model 3D
+    /// </summary>
+    private System.Collections.IEnumerator MockScanRoutine()
+    {
+        isScanning = true;
+
+        // Bật hướng dẫn + hiệu ứng quét + scan frame
+        if (scanInstruction != null) scanInstruction.SetActive(true);
+        if (scanFX != null) scanFX.SetActive(true);
+        if (scanFrame != null) scanFrame.SetActive(true); // Show scan frame during scanning
+        if (stimulateButton != null) stimulateButton.SetActive(false); // Ẩn nút Scan khi đang quét
+        if (resetButton != null) resetButton.SetActive(false); // Ẩn nút Reset khi đang quét
+
+        // Ẩn model & các nút trong lúc đang quét
+        if (model3D != null) model3D.SetActive(false);
+        if (viewInfoButton != null) viewInfoButton.SetActive(false);
+        if (quizButton != null) quizButton.SetActive(false);
+
+        // Chờ thời gian giả lập
+        yield return new WaitForSeconds(fakeScanDelay);
+
+        // Giả lập: đã nhận diện xong object
+        if (scanInstruction != null) scanInstruction.SetActive(false);
+        if (scanFX != null) scanFX.SetActive(false);
+        if (scanFrame != null) scanFrame.SetActive(false); // Hide scan frame when model is detected
+
+        if (model3D != null) model3D.SetActive(true);
+
+        // Lấy dữ liệu từ database
+        if (wordDatabase != null && !string.IsNullOrEmpty(detectedWordID))
+        {
+            currentDetectedWord = wordDatabase.GetWordByID(detectedWordID);
+            if (currentDetectedWord != null)
+            {
+                Debug.Log($"Detected word: {currentDetectedWord.englishName}");
+            }
+        }
+
+        // After detection: Hide Stimulate button, show Reset button
+        if (stimulateButton != null) stimulateButton.SetActive(false);
+        if (resetButton != null) resetButton.SetActive(true);
+
+        // Cho phép bấm Dictionary / Quiz sau khi người dùng chạm vào model (xử lý trong Update)
+        isScanning = false;
+    }
+
+    // --- HÀM 3: Tự động phát hiện click vào vật thể 3D ---
+    void Update()
+    {
+        // Nếu vật thể đang hiện, kiểm tra chuột click
+        if (model3D != null && model3D.activeSelf && Input.GetMouseButtonDown(0))
+        {
+            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            RaycastHit hit;
+
+            if (Physics.Raycast(ray, out hit))
+            {
+                if (hit.collider.gameObject == model3D)
+                {
+                    Debug.Log("Đã bấm vào quả táo!");
+                    if (viewInfoButton != null) viewInfoButton.SetActive(true); // Hiện nút xem thông tin
+                    if (quizButton != null) quizButton.SetActive(true); // Hiện nút quiz (optional)
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryNavigationHandler.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// Handles back button navigation in Dictionary panel
+/// Determines whether to go back to List View or AR Scan panel
+/// </summary>
+public class DictionaryNavigationHandler : MonoBehaviour
+{
+    [Header("Panel References")]
+    public GameObject dictionaryPanel;
+    public GameObject scanPanel;
+    public GameObject homePanel;
+
+    [Header("Components")]
+    public DictionaryListView listView;
+    public SimpleMenuController menuController;
+    public ARScanFeature arScanFeature;
+
+    [Header("Button")]
+    public Button backButton;
+
+    void OnEnable()
+    {
+        if (backButton != null)
+        {
+            backButton.onClick.RemoveAllListeners(); // Clear any existing listeners
+            backButton.onClick.AddListener(OnBackClicked);
+        }
+    }
+
+    void OnDisable()
+    {
+        if (backButton != null)
+        {
+            backButton.onClick.RemoveListener(OnBackClicked);
+        }
+    }
+
+    public void OnBackClicked()
+    {
+        // Check if opened from AR Scan using static flag
+        bool openedFromAR = ARScanFeature.IsOpenedFromARScan();
+        
+        Debug.Log($"[DictionaryNavigationHandler] Back clicked. OpenedFromAR: {openedFromAR}");
+
+        if (openedFromAR)
+        {
+            // Came from AR Scan → Go back to AR Scan panel
+            Debug.Log("[DictionaryNavigationHandler] Returning to AR Scan panel");
+            
+            if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+            if (scanPanel != null) scanPanel.SetActive(true);
+
+            if (arScanFeature != null)
+            {
+                arScanFeature.OnBackFromDictionary();
+            }
+        }
+        else
+        {
+            // Came from Home menu → Go back to List View (or Home if already in list view)
+            Debug.Log("[DictionaryNavigationHandler] Returning to List View or Home");
+            
+            if (listView != null)
+            {
+                // Check if we're currently in detail view
+                if (listView.IsInDetailView())
+                {
+                    // In detail view → go back to list view
+                    listView.BackToListView();
+                }
+                else
+                {
+                    // Already in list view → go back to home
+                    if (menuController != null)
+                    {
+                        menuController.BackToHome();
+                    }
+                    else
+                    {
+                        // Fallback: manually hide dictionary and show home
+                        if (dictionaryPanel != null) dictionaryPanel.SetActive(false);
+                        if (homePanel != null) homePanel.SetActive(true);
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning("DictionaryNavigationHandler: listView reference is not assigned!");
+            }
+        }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\DictionaryUI.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// Dictionary UI - Displays word information in detail view
+/// Navigation is handled by DictionaryNavigationHandler
+/// </summary>
+public class DictionaryUI : MonoBehaviour
+{
+    [Header("UI References")]
+    [SerializeField] private TextMeshProUGUI englishNameText;
+    [SerializeField] private TextMeshProUGUI vietnameseNameText;
+    [SerializeField] private TextMeshProUGUI pronunciationText;
+    [SerializeField] private TextMeshProUGUI descriptionText;
+    [SerializeField] private TextMeshProUGUI vietnameseDescriptionText;
+    [SerializeField] private Image iconImage;
+    [SerializeField] private Button playPronunciationButton;
+
+    private WordData currentWordData;
+
+    void OnEnable()
+    {
+        if (playPronunciationButton != null)
+            playPronunciationButton.onClick.AddListener(PlayPronunciation);
+    }
+
+    void OnDisable()
+    {
+        if (playPronunciationButton != null)
+            playPronunciationButton.onClick.RemoveListener(PlayPronunciation);
+    }
+
+    public void DisplayWord(WordData wordData, bool fromARView = false)
+    {
+        if (wordData == null)
+        {
+            Debug.LogWarning("DictionaryUI: WordData is null!");
+            return;
+        }
+
+        currentWordData = wordData;
+
+        if (englishNameText != null)
+            englishNameText.text = wordData.englishName;
+
+        if (vietnameseNameText != null)
+            vietnameseNameText.text = wordData.vietnameseName;
+
+        if (pronunciationText != null)
+        {
+            if (!string.IsNullOrEmpty(wordData.pronunciation))
+            {
+                pronunciationText.text = wordData.pronunciation;
+                pronunciationText.gameObject.SetActive(true);
+            }
+            else
+            {
+                pronunciationText.gameObject.SetActive(false);
+            }
+        }
+
+        if (descriptionText != null)
+            descriptionText.text = wordData.description;
+
+        if (vietnameseDescriptionText != null)
+        {
+            if (!string.IsNullOrEmpty(wordData.vietnameseDescription))
+            {
+                vietnameseDescriptionText.text = wordData.vietnameseDescription;
+                vietnameseDescriptionText.gameObject.SetActive(true);
+            }
+            else
+            {
+                vietnameseDescriptionText.gameObject.SetActive(false);
+            }
+        }
+
+        if (iconImage != null && wordData.icon2D != null)
+        {
+            iconImage.sprite = wordData.icon2D;
+            iconImage.gameObject.SetActive(true);
+        }
+        else if (iconImage != null)
+        {
+            iconImage.gameObject.SetActive(false);
+        }
+
+        if (playPronunciationButton != null)
+        {
+            playPronunciationButton.interactable = (wordData.audioPronounce != null);
+        }
+    }
+
+    public void PlayPronunciation()
+    {
+        if (currentWordData == null)
+        {
+            Debug.LogWarning("DictionaryUI: No word data to play pronunciation!");
+            return;
+        }
+
+        if (currentWordData.audioPronounce != null)
+        {
+            if (AudioManager.Instance != null)
+            {
+                AudioManager.Instance.PlayVoice(currentWordData.audioPronounce);
+                Debug.Log($"[DictionaryUI] Playing pronunciation for: {currentWordData.englishName}");
+            }
+            else
+            {
+                Debug.LogError("DictionaryUI: AudioManager not found!");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("DictionaryUI: Pronunciation audio clip is missing!");
+        }
+    }
+
+    public void ClearDisplay()
+    {
+        currentWordData = null;
+        
+        if (englishNameText != null)
+            englishNameText.text = "";
+        
+        if (vietnameseNameText != null)
+            vietnameseNameText.text = "";
+
+        if (pronunciationText != null)
+        {
+            pronunciationText.text = "";
+            pronunciationText.gameObject.SetActive(false);
+        }
+        
+        if (descriptionText != null)
+            descriptionText.text = "";
+
+        if (vietnameseDescriptionText != null)
+        {
+            vietnameseDescriptionText.text = "";
+            vietnameseDescriptionText.gameObject.SetActive(false);
+        }
+        
+        if (iconImage != null)
+            iconImage.gameObject.SetActive(false);
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\HomeUI.cs
+// ==========================================
+
+
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\QuizBackButtonHandler.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// Handles Back button in Quiz panel - navigates to correct panel based on source
+/// </summary>
+public class QuizBackButtonHandler : MonoBehaviour
+{
+    [Header("Panel References")]
+    public GameObject quizPanel;
+    public GameObject scanPanel;
+    public GameObject homePanel;
+    public SimpleMenuController menuController;
+    public ARScanFeature arScanFeature;
+
+    [Header("Button")]
+    public Button backButton; // Keep for reference, but don't add listener in code
+
+    // The button is already connected in Unity Inspector, so we don't need to add listener in code
+
+    public void OnBackClicked()
+    {
+        Debug.Log("[QuizBackButtonHandler] ========== OnBackClicked START ==========");
+        
+        // Check if opened from AR Scan using static flag
+        bool openedFromAR = ARScanFeature.IsOpenedFromARScan();
+        
+        Debug.Log($"[QuizBackButtonHandler] Back clicked. OpenedFromAR: {openedFromAR}");
+
+        if (openedFromAR)
+        {
+            // Came from AR Scan → Go back to AR Scan panel
+            Debug.Log("[QuizBackButtonHandler] Going to AR Scan panel (openedFromAR = TRUE)");
+            
+            if (quizPanel != null) 
+            {
+                quizPanel.SetActive(false);
+                Debug.Log("[QuizBackButtonHandler] Quiz panel deactivated");
+            }
+            
+            if (scanPanel != null) 
+            {
+                scanPanel.SetActive(true);
+                Debug.Log("[QuizBackButtonHandler] Scan panel activated");
+            }
+
+            if (arScanFeature != null)
+            {
+                arScanFeature.OnBackFromQuiz();
+                Debug.Log("[QuizBackButtonHandler] Called arScanFeature.OnBackFromQuiz()");
+            }
+            else
+            {
+                Debug.LogError("[QuizBackButtonHandler] arScanFeature is NULL!");
+            }
+        }
+        else
+        {
+            // Came from Home menu → Go back to Home
+            Debug.Log("[QuizBackButtonHandler] Going to Home panel (openedFromAR = FALSE)");
+            
+            if (menuController != null)
+            {
+                menuController.BackToHome();
+                Debug.Log("[QuizBackButtonHandler] Called menuController.BackToHome()");
+            }
+            else
+            {
+                Debug.LogWarning("[QuizBackButtonHandler] menuController is NULL - using fallback");
+                
+                // Fallback: manually hide quiz and show home
+                if (quizPanel != null) quizPanel.SetActive(false);
+                if (homePanel != null) homePanel.SetActive(true);
+            }
+        }
+        
+        Debug.Log("[QuizBackButtonHandler] ========== OnBackClicked END ==========");
+    }
+}
+
+// ==========================================
 // FILE PATH: Assets\_AR Lingo\Scripts\UI\QuizUI.cs
-// ==========================================
-
-
-
-// ==========================================
-// FILE PATH: Assets\_AR Lingo\Scripts\UI\ScanUI.cs
 // ==========================================
 
 
@@ -2931,7 +3029,7 @@ public class SettingsUI : MonoBehaviour
 
     [Header("Quiz Settings UI")]
     public GameObject quizSettingsPanel;
-    public GameObject quizSettingsOverlay; // NEW: Dark overlay
+    public GameObject quizSettingsOverlay;
     public Slider sliderQuestionCount;
     public TextMeshProUGUI textQuestionCount;
     public Toggle toggleAutoGenerate;
@@ -2994,7 +3092,7 @@ public class SettingsUI : MonoBehaviour
             quizSettingsPanel.SetActive(false);
         }
 
-        // NEW: Initially hide overlay
+        // Initially hide overlay
         if (quizSettingsOverlay != null)
         {
             quizSettingsOverlay.SetActive(false);
@@ -3084,7 +3182,7 @@ public class SettingsUI : MonoBehaviour
 
     public void OnOpenQuizSettingsClicked()
     {
-        // NEW: Show overlay first (to darken background)
+        // Show overlay first (to darken background)
         if (quizSettingsOverlay != null)
         {
             quizSettingsOverlay.SetActive(true);
@@ -3109,7 +3207,7 @@ public class SettingsUI : MonoBehaviour
             {
                 quizManager.numberOfQuestions = questionCount;
                 
-                // FIXED: Regenerate quiz with new settings immediately
+                // Regenerate quiz with new settings immediately
                 if (quizManager.autoGenerateOnStart)
                 {
                     quizManager.GenerateQuizFromDatabase(questionCount);
@@ -3138,7 +3236,7 @@ public class SettingsUI : MonoBehaviour
         CloseQuizSettings();
     }
 
-    // NEW: Helper method to close quiz settings (used by Save and Cancel)
+    // Helper method to close quiz settings (used by Save and Cancel)
     private void CloseQuizSettings()
     {
         if (quizSettingsPanel != null)
@@ -3146,7 +3244,7 @@ public class SettingsUI : MonoBehaviour
             quizSettingsPanel.SetActive(false);
         }
 
-        // NEW: Hide overlay when closing
+        // Hide overlay when closing
         if (quizSettingsOverlay != null)
         {
             quizSettingsOverlay.SetActive(false);
@@ -3167,6 +3265,90 @@ public class SettingsUI : MonoBehaviour
         {
             menuController.BackToHome();
         }
+    }
+}
+
+// ==========================================
+// FILE PATH: Assets\_AR Lingo\Scripts\UI\SimpleMenuController.cs
+// ==========================================
+
+using UnityEngine;
+using UnityEngine.UI;
+
+// IMPORTANT: Only import UnityEditor in Editor mode
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+public class SimpleMenuController : MonoBehaviour
+{
+    [Header("Kéo các Panel vào đây")]
+    public GameObject homePanel;
+    public GameObject scanPanel;
+    public GameObject dictionaryPanel;
+    public GameObject quizPanel;
+    public GameObject settingPanel;
+
+    // --- HÀM CHO CÁC NÚT Ở MÀN HÌNH HOME ---
+
+    public void OpenScan()
+    {
+        homePanel.SetActive(false);
+        scanPanel.SetActive(true);
+        
+        ARScanFeature.ClearARScanFlag();
+    }
+
+    public void OpenDictionary()
+    {
+        homePanel.SetActive(false);
+        dictionaryPanel.SetActive(true);
+        
+        ARScanFeature.ClearARScanFlag();
+    }
+
+    public void OpenQuiz()
+    {
+        homePanel.SetActive(false);
+        quizPanel.SetActive(true);
+        
+        ARScanFeature.ClearARScanFlag();
+    }
+
+    public void OpenSetting()
+    {
+        homePanel.SetActive(false);
+        settingPanel.SetActive(true);
+    }
+
+    /// <summary>
+    /// Quit the application
+    /// </summary>
+    public void QuitApp()
+    {
+        Debug.Log("[SimpleMenuController] Quitting application...");
+
+        #if UNITY_EDITOR
+        // In Unity Editor: Stop play mode
+        EditorApplication.isPlaying = false;
+        #else
+        // On device/build: Quit application
+        Application.Quit();
+        #endif
+    }
+
+    // --- HÀM CHO NÚT BACK ---
+
+    public void BackToHome()
+    {
+        ARScanFeature.ClearARScanFlag();
+        
+        scanPanel.SetActive(false);
+        dictionaryPanel.SetActive(false);
+        quizPanel.SetActive(false);
+        settingPanel.SetActive(false);
+
+        homePanel.SetActive(true);
     }
 }
 
